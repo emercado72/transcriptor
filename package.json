@@ -1,0 +1,21 @@
+{
+  "name": "transcriptor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-agent system for automated assembly minutes production",
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm -r --parallel dev",
+    "clean": "pnpm -r clean && rm -rf node_modules",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "db:migrate": "pnpm --filter @transcriptor/shared db:migrate",
+    "db:seed": "pnpm --filter @transcriptor/shared db:seed",
+    "test": "pnpm -r test"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@10.30.3"
+}

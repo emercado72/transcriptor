@@ -1,0 +1,6 @@
+packages:
+  - packages/*
+
+allowBuild: esbuild msgpackr-extract
+
+onlyBuiltDependencies: esbuild

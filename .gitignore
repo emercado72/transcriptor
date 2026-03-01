@@ -67,8 +67,9 @@ coverage/
 # Redis dump
 dump.rdb
 
-# Config with secrets (keep examples, ignore real ones)
+# Config with secrets (keep examples and defaults, ignore real ones)
 config/clients/*.json
 config/glossary/*.json
 !config/clients/example.json
 !config/glossary/example.json
+!config/glossary/default.json

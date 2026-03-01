@@ -1,0 +1,8 @@
+{
+  "buildingName": "Conjunto Residencial Ejemplo",
+  "nit": "900.123.456-7",
+  "towers": 2,
+  "unitsPerTower": 80,
+  "adminName": "María García López",
+  "customTerms": ["salón comunal", "zona BBQ", "parqueadero de visitantes"]
+}

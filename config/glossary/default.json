@@ -1,0 +1,22 @@
+[
+  { "term": "propiedad horizontal", "replacement": "propiedad horizontal", "context": "Régimen legal colombiano Ley 675/2001", "clientId": null },
+  { "term": "coeficiente", "replacement": "coeficiente de copropiedad", "context": "Porcentaje de participación en la propiedad", "clientId": null },
+  { "term": "quórum", "replacement": "quórum", "context": "Mínimo de asistentes requerido", "clientId": null },
+  { "term": "asamblea ordinaria", "replacement": "Asamblea General Ordinaria de Propietarios", "context": "Reunión anual obligatoria", "clientId": null },
+  { "term": "asamblea extraordinaria", "replacement": "Asamblea General Extraordinaria de Propietarios", "context": "Reunión especial convocada fuera del calendario ordinario", "clientId": null },
+  { "term": "acta", "replacement": "acta de asamblea", "context": "Documento formal que registra las decisiones", "clientId": null },
+  { "term": "administrador", "replacement": "administrador(a)", "context": "Persona encargada de la gestión del edificio", "clientId": null },
+  { "term": "consejo de administración", "replacement": "Consejo de Administración", "context": "Órgano directivo de la copropiedad", "clientId": null },
+  { "term": "revisor fiscal", "replacement": "Revisor(a) Fiscal", "context": "Profesional encargado del control financiero", "clientId": null },
+  { "term": "presupuesto", "replacement": "presupuesto", "context": "Plan financiero anual de la copropiedad", "clientId": null },
+  { "term": "cuota de administración", "replacement": "cuota de administración", "context": "Aporte mensual de los copropietarios", "clientId": null },
+  { "term": "expensas comunes", "replacement": "expensas comunes", "context": "Gastos compartidos de la copropiedad", "clientId": null },
+  { "term": "bienes comunes", "replacement": "bienes comunes", "context": "Áreas y elementos de uso compartido", "clientId": null },
+  { "term": "unidad privada", "replacement": "unidad privada", "context": "Apartamento, local u oficina individual", "clientId": null },
+  { "term": "poder", "replacement": "poder de representación", "context": "Autorización para votar en nombre de otro propietario", "clientId": null },
+  { "term": "Ley 675", "replacement": "Ley 675 de 2001", "context": "Régimen de propiedad horizontal en Colombia", "clientId": null },
+  { "term": "NIT", "replacement": "NIT", "context": "Número de Identificación Tributaria", "clientId": null },
+  { "term": "verificador de quórum", "replacement": "verificador(a) de quórum", "context": "Persona designada para verificar asistencia", "clientId": null },
+  { "term": "mesa directiva", "replacement": "mesa directiva", "context": "Presidente y secretario de la asamblea", "clientId": null },
+  { "term": "orden del día", "replacement": "orden del día", "context": "Agenda de la asamblea", "clientId": null }
+]

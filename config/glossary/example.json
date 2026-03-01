@@ -1,0 +1,4 @@
+[
+  { "term": "salón comunal", "replacement": "salón comunal", "context": "Área social del conjunto ejemplo", "clientId": "example" },
+  { "term": "zona BBQ", "replacement": "zona de asados (BBQ)", "context": "Área social al aire libre", "clientId": "example" }
+]
