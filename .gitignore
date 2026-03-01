@@ -1,0 +1,74 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+*.js.map
+*.d.ts.map
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+token.json
+service-account.json
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Runtime / temp files
+tmp/
+temp/
+.tmp/
+*.tmp
+
+# Audio files (large binary assets — not tracked in git)
+*.mp3
+*.mp4
+*.wav
+*.flac
+*.ogg
+*.m4a
+*.aac
+*.wma
+
+# Output documents
+*.docx
+*.pdf
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# TypeScript incremental build
+*.tsbuildinfo
+
+# Redis dump
+dump.rdb
+
+# Config with secrets (keep examples, ignore real ones)
+config/clients/*.json
+config/glossary/*.json
+!config/clients/example.json
+!config/glossary/example.json
