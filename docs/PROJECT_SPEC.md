@@ -20,7 +20,7 @@ Transcriptor is a multi-agent system that automates the production of formal ass
 - Queue: BullMQ + Redis
 - Audio: FFmpeg via fluent-ffmpeg
 - Transcription: ElevenLabs Scribe API
-- LLM: Anthropic Claude API
+- LLM: OpenAI API (GPT-4o)
 - Document: docx npm package
 - Storage: Google Drive API
 - UI: React (Gloria)

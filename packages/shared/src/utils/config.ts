@@ -18,7 +18,7 @@ export function getEnvConfig(): EnvConfig {
     redisHost: process.env.REDIS_HOST || '127.0.0.1',
     redisPort: parseInt(process.env.REDIS_PORT || '6379', 10),
     redisPassword: process.env.REDIS_PASSWORD || '',
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
+    openaiApiKey: process.env.OPENAI_API_KEY || '',
     elevenLabsApiKey: process.env.ELEVENLABS_API_KEY || '',
     googleClientId: process.env.GOOGLE_CLIENT_ID || '',
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || '',

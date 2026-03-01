@@ -32,7 +32,7 @@ export interface EnvConfig {
   redisHost: string;
   redisPort: number;
   redisPassword: string;
-  anthropicApiKey: string;
+  openaiApiKey: string;
   elevenLabsApiKey: string;
   googleClientId: string;
   googleClientSecret: string;

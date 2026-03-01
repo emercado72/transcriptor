@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@transcriptor/shared": "workspace:*",
-    "@anthropic-ai/sdk": "^0.39.0"
+    "openai": "^4.80.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

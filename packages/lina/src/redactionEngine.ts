@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { createLogger, getEnvConfig } from '@transcriptor/shared';
 import type {
   SectionFile,
@@ -46,14 +46,14 @@ export interface RedactionValidation {
   completeness: number;
 }
 
-let anthropicClient: Anthropic | null = null;
+let openaiClient: OpenAI | null = null;
 
-function getClient(): Anthropic {
-  if (!anthropicClient) {
+function getClient(): OpenAI {
+  if (!openaiClient) {
     const env = getEnvConfig();
-    anthropicClient = new Anthropic({ apiKey: env.anthropicApiKey });
+    openaiClient = new OpenAI({ apiKey: env.openaiApiKey });
   }
-  return anthropicClient;
+  return openaiClient;
 }
 
 export async function redactSection(
@@ -66,8 +66,8 @@ export async function redactSection(
   const prompt = buildSectionPrompt(rawSection, _templateConfig, context);
   const client = getClient();
 
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
+  const response = await client.chat.completions.create({
+    model: 'gpt-4o',
     max_tokens: 4096,
     messages: [
       {
@@ -77,10 +77,7 @@ export async function redactSection(
     ],
   });
 
-  const redactedText = response.content
-    .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-    .map((block) => block.text)
-    .join('\n');
+  const redactedText = response.choices[0]?.message?.content || '';
 
   const content: ContentBlock[] = [
     {
