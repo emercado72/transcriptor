@@ -134,6 +134,10 @@ export function startServer(port?: number): void {
 
   // ── Agent Chat endpoint ──
   app.post('/api/agents/:agentId/chat', async (req, res) => {
+    // Set 2.5 min server-side timeout for LLM tool loops
+    req.setTimeout(150_000);
+    res.setTimeout(150_000);
+
     try {
       const { agentId } = req.params;
       const { message } = req.body as { message: string };
@@ -144,7 +148,9 @@ export function startServer(port?: number): void {
       res.json({ reply });
     } catch (err) {
       logger.error('Error in agent chat', err as Error);
-      res.status(500).json({ error: 'Chat request failed' });
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Chat request failed' });
+      }
     }
   });
 
