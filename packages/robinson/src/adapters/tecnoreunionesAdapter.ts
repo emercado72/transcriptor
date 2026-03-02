@@ -22,6 +22,32 @@ function getConfig(): TecnoreunionesConfig {
 }
 
 // ──────────────────────────────────────────────
+// Rate limiter — Tecnoreuniones throttles at 5 req/s
+// ──────────────────────────────────────────────
+
+const RATE_LIMIT = 5;               // max calls per window
+const RATE_WINDOW_MS = 1_000;       // 1 second window
+const callTimestamps: number[] = [];
+
+async function waitForSlot(): Promise<void> {
+  while (true) {
+    const now = Date.now();
+    // Purge timestamps older than the window
+    while (callTimestamps.length > 0 && callTimestamps[0] <= now - RATE_WINDOW_MS) {
+      callTimestamps.shift();
+    }
+    if (callTimestamps.length < RATE_LIMIT) {
+      callTimestamps.push(now);
+      return;
+    }
+    // Wait until the oldest call exits the window
+    const waitMs = callTimestamps[0] + RATE_WINDOW_MS - now + 1;
+    logger.debug(`Rate limit reached, waiting ${waitMs}ms`);
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+  }
+}
+
+// ──────────────────────────────────────────────
 // Low-level API transport
 // ──────────────────────────────────────────────
 
@@ -29,12 +55,16 @@ function getConfig(): TecnoreunionesConfig {
  * Calls the Tecnoreuniones PHP API.
  * All parameters are sent as application/x-www-form-urlencoded POST body.
  * The PHP backend uses $_REQUEST, so both POST body and query params work.
+ * Rate-limited to 5 calls/second.
  */
 export async function callService(
   serviceId: number,
   params: Record<string, string | number> = {},
 ): Promise<unknown> {
   const config = getConfig();
+
+  // Wait for a rate-limit slot before sending
+  await waitForSlot();
 
   const formData = new URLSearchParams();
   formData.append('service', String(serviceId));
