@@ -9,6 +9,7 @@ interface Props {
   selectedNode: AgentId | null;
   onSelectNode: (id: AgentId | null) => void;
   onMoveNode: (id: AgentId, x: number, y: number) => void;
+  onNodeContextMenu?: (id: AgentId, x: number, y: number) => void;
 }
 
 const NODE_RADIUS = 40;
@@ -36,6 +37,7 @@ export default function AgentGraph({
   selectedNode,
   onSelectNode,
   onMoveNode,
+  onNodeContextMenu,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [dragging, setDragging] = useState<AgentId | null>(null);
@@ -224,6 +226,13 @@ export default function AgentGraph({
             onPointerDown={(e) => {
               handleNodePointerDown(e, node.id);
               onSelectNode(node.id);
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (onNodeContextMenu) {
+                onNodeContextMenu(node.id, e.clientX, e.clientY);
+              }
             }}
             style={{ cursor: 'pointer' }}
           >

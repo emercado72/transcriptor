@@ -4,7 +4,7 @@ import express from 'express';
 import cors from 'cors';
 import { sql } from 'drizzle-orm';
 import OpenAI from 'openai';
-import { createLogger, getEnvConfig, getDb } from '@transcriptor/shared';
+import { createLogger, getEnvConfig, getDb, gwDriveListFiles } from '@transcriptor/shared';
 import type { JobId, SectionId } from '@transcriptor/shared';
 import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions.js';
 
@@ -153,6 +153,85 @@ export function startServer(port?: number): void {
       if (!res.headersSent) {
         res.status(500).json({ error: 'Chat request failed' });
       }
+    }
+  });
+
+  // ══════════════════════════════════════
+  //  YULIETH CONFIG / QUEUE / WATCHER
+  // ══════════════════════════════════════
+
+  // Get Yulieth config
+  app.get('/api/agents/yulieth/config', (_req, res) => {
+    res.json(yuliethConfig);
+  });
+
+  // Update Yulieth config
+  app.put('/api/agents/yulieth/config', (req, res) => {
+    const body = req.body;
+    if (body.driveFolderId !== undefined) yuliethConfig.driveFolderId = String(body.driveFolderId);
+    if (body.pollIntervalSeconds !== undefined) yuliethConfig.pollIntervalSeconds = Math.max(30, Number(body.pollIntervalSeconds) || 60);
+    if (body.autoQueue !== undefined) yuliethConfig.autoQueue = Boolean(body.autoQueue);
+    if (body.audioExtensions !== undefined) yuliethConfig.audioExtensions = body.audioExtensions;
+    if (body.votingExtensions !== undefined) yuliethConfig.votingExtensions = body.votingExtensions;
+    logger.info('Yulieth config updated', yuliethConfig);
+    res.json({ config: yuliethConfig });
+  });
+
+  // Start / Stop watcher
+  app.post('/api/agents/yulieth/watcher', (req, res) => {
+    const { action } = req.body;
+    if (action === 'start') {
+      if (!yuliethConfig.driveFolderId) {
+        return res.status(400).json({ error: 'driveFolderId is required to start watcher' });
+      }
+      startYuliethWatcher();
+      res.json({ isWatching: yuliethConfig.isWatching });
+    } else if (action === 'stop') {
+      stopYuliethWatcher();
+      res.json({ isWatching: yuliethConfig.isWatching });
+    } else {
+      res.status(400).json({ error: 'action must be "start" or "stop"' });
+    }
+  });
+
+  // Manual drive scan
+  app.post('/api/agents/yulieth/drive-scan', async (req, res) => {
+    try {
+      const folderId = req.body.folderId || yuliethConfig.driveFolderId;
+      if (!folderId) {
+        return res.status(400).json({ error: 'No folderId provided' });
+      }
+      const folders = await scanDriveFolder(folderId);
+      res.json({ folders });
+    } catch (err) {
+      logger.error('Drive scan error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Get queue (detected folders + stats)
+  app.get('/api/agents/yulieth/queue', async (_req, res) => {
+    try {
+      const data = await getYuliethQueue();
+      res.json(data);
+    } catch (err) {
+      logger.error('Queue fetch error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Enqueue a detected folder
+  app.post('/api/agents/yulieth/enqueue', async (req, res) => {
+    try {
+      const { folderId } = req.body;
+      if (!folderId) {
+        return res.status(400).json({ error: 'folderId required' });
+      }
+      const result = await enqueueDetectedFolder(folderId);
+      res.json(result);
+    } catch (err) {
+      logger.error('Enqueue error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
     }
   });
 
@@ -579,7 +658,7 @@ const YULIETH_OWN_TOOLS: ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          rootFolderId: { type: 'string', description: 'The Google Drive folder ID to scan. If omitted, uses the configured default.' },
+          rootFolderId: { type: 'string', nullable: true, description: 'The Google Drive folder ID to scan. If omitted or null, uses the configured default.' },
         },
         required: [],
       },
@@ -593,8 +672,8 @@ const YULIETH_OWN_TOOLS: ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          status: { type: 'string', description: 'Filter by status (detected, queued, preprocessing, transcribing, sectioning, redacting, assembling, reviewing, completed, failed). If omitted, returns all.' },
-          limit: { type: 'number', description: 'Max number of jobs to return. Default 20.' },
+          status: { type: 'string', nullable: true, description: 'Filter by status (detected, queued, preprocessing, transcribing, sectioning, redacting, assembling, reviewing, completed, failed). If omitted, returns all.' },
+          limit: { type: 'number', nullable: true, description: 'Max number of jobs to return. Default 20.' },
         },
         required: [],
       },
@@ -615,7 +694,7 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
         type: 'object',
         properties: {
           folderId: { type: 'string', description: 'The Google Drive folder ID to list.' },
-          maxResults: { type: 'number', description: 'Maximum number of files to return. Default 50.' },
+          maxResults: { type: 'number', nullable: true, description: 'Maximum number of files to return. Default 50.' },
         },
         required: ['folderId'],
       },
@@ -630,7 +709,7 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
         type: 'object',
         properties: {
           query: { type: 'string', description: 'The search text to find in file names.' },
-          maxResults: { type: 'number', description: 'Maximum results. Default 20.' },
+          maxResults: { type: 'number', nullable: true, description: 'Maximum results. Default 20.' },
         },
         required: ['query'],
       },
@@ -659,7 +738,7 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
         type: 'object',
         properties: {
           name: { type: 'string', description: 'Name for the new folder.' },
-          parentId: { type: 'string', description: 'Parent folder ID. If omitted, creates in root.' },
+          parentId: { type: 'string', nullable: true, description: 'Parent folder ID. If omitted, creates in root.' },
         },
         required: ['name'],
       },
@@ -689,7 +768,7 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
         type: 'object',
         properties: {
           title: { type: 'string', description: 'Title of the new document.' },
-          bodyText: { type: 'string', description: 'Optional initial text content.' },
+          bodyText: { type: 'string', nullable: true, description: 'Optional initial text content.' },
         },
         required: ['title'],
       },
@@ -794,10 +873,10 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          calendarId: { type: 'string', description: 'Calendar ID. Default "primary".' },
-          maxResults: { type: 'number', description: 'Max events to return. Default 20.' },
-          timeMin: { type: 'string', description: 'Earliest event time (ISO 8601). Default now.' },
-          timeMax: { type: 'string', description: 'Latest event time (ISO 8601). If omitted, no upper limit.' },
+          calendarId: { type: 'string', nullable: true, description: 'Calendar ID. Default "primary".' },
+          maxResults: { type: 'number', nullable: true, description: 'Max events to return. Default 20.' },
+          timeMin: { type: 'string', nullable: true, description: 'Earliest event time (ISO 8601). Default now.' },
+          timeMax: { type: 'string', nullable: true, description: 'Latest event time (ISO 8601). If omitted, no upper limit.' },
         },
         required: [],
       },
@@ -814,14 +893,14 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
           summary: { type: 'string', description: 'Event title/summary.' },
           start: { type: 'string', description: 'Start date-time in ISO 8601 format.' },
           end: { type: 'string', description: 'End date-time in ISO 8601 format.' },
-          description: { type: 'string', description: 'Event description.' },
-          location: { type: 'string', description: 'Event location.' },
+          description: { type: 'string', nullable: true, description: 'Event description.' },
+          location: { type: 'string', nullable: true, description: 'Event location.' },
           attendees: {
             type: 'array',
             items: { type: 'string' },
             description: 'List of attendee email addresses.',
           },
-          calendarId: { type: 'string', description: 'Calendar ID. Default "primary".' },
+          calendarId: { type: 'string', nullable: true, description: 'Calendar ID. Default "primary".' },
         },
         required: ['summary', 'start', 'end'],
       },
@@ -836,8 +915,8 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Gmail search query. Default "in:inbox". Examples: "from:info@tecnoreuniones.com", "subject:acta is:unread".' },
-          maxResults: { type: 'number', description: 'Max messages to return. Default 20.' },
+          query: { type: 'string', nullable: true, description: 'Gmail search query. Default "in:inbox". Examples: "from:info@tecnoreuniones.com", "subject:acta is:unread".' },
+          maxResults: { type: 'number', nullable: true, description: 'Max messages to return. Default 20.' },
         },
         required: [],
       },
@@ -868,8 +947,8 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
           to: { type: 'string', description: 'Recipient email address.' },
           subject: { type: 'string', description: 'Email subject line.' },
           body: { type: 'string', description: 'Plain-text email body.' },
-          cc: { type: 'string', description: 'CC email address (optional).' },
-          bcc: { type: 'string', description: 'BCC email address (optional).' },
+          cc: { type: 'string', nullable: true, description: 'CC email address (optional).' },
+          bcc: { type: 'string', nullable: true, description: 'BCC email address (optional).' },
         },
         required: ['to', 'subject', 'body'],
       },
@@ -1561,6 +1640,160 @@ async function handleAgentChat(agentId: string, message: string): Promise<string
     logger.error(`Agent ${agentId} chat error`, { error: errMsg });
     return `❌ Error: ${errMsg}`;
   }
+}
+
+// ══════════════════════════════════════════════════
+//  YULIETH CONFIG, WATCHER & QUEUE MANAGEMENT
+// ══════════════════════════════════════════════════
+
+interface YuliethConfigState {
+  driveFolderId: string;
+  pollIntervalSeconds: number;
+  autoQueue: boolean;
+  audioExtensions: string[];
+  votingExtensions: string[];
+  isWatching: boolean;
+}
+
+interface DetectedFolder {
+  folderId: string;
+  folderName: string;
+  audioFiles: { id: string; name: string; size: number }[];
+  votingFiles: { id: string; name: string; size: number }[];
+  status: 'detected' | 'queued' | 'processing' | 'completed' | 'error';
+  detectedAt: string;
+  jobId?: string;
+}
+
+const AUDIO_EXTS = new Set(['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac', '.mp4', '.wma']);
+const VOTING_EXTS = new Set(['.xlsx', '.csv', '.json', '.xls']);
+
+const yuliethConfig: YuliethConfigState = {
+  driveFolderId: process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || '',
+  pollIntervalSeconds: 60,
+  autoQueue: false,
+  audioExtensions: [...AUDIO_EXTS],
+  votingExtensions: [...VOTING_EXTS],
+  isWatching: false,
+};
+
+// In-memory store of detected folders
+const detectedFolders = new Map<string, DetectedFolder>();
+let watcherTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Scan a Drive folder for subfolders containing audio/voting files */
+async function scanDriveFolder(folderId: string): Promise<DetectedFolder[]> {
+  logger.info(`Scanning Drive folder: ${folderId}`);
+
+  const audioExts = new Set(yuliethConfig.audioExtensions.map(e => e.toLowerCase()));
+  const votingExts = new Set(yuliethConfig.votingExtensions.map(e => e.toLowerCase()));
+
+  // List root folder contents
+  const rootFiles = await gwDriveListFiles(folderId, 100);
+  const subfolders = rootFiles.filter(f => f.mimeType === 'application/vnd.google-apps.folder');
+
+  const results: DetectedFolder[] = [];
+
+  for (const subfolder of subfolders) {
+    // Check if already tracked
+    const existing = detectedFolders.get(subfolder.id);
+    if (existing && existing.status !== 'detected') {
+      results.push(existing);
+      continue;
+    }
+
+    // List subfolder contents
+    const contents = await gwDriveListFiles(subfolder.id, 100);
+    const audioFiles = contents
+      .filter(f => {
+        const ext = f.name.toLowerCase().match(/\.[^.]+$/)?.[0] || '';
+        return audioExts.has(ext);
+      })
+      .map(f => ({ id: f.id, name: f.name, size: f.size }));
+
+    const votingFiles = contents
+      .filter(f => {
+        const ext = f.name.toLowerCase().match(/\.[^.]+$/)?.[0] || '';
+        return votingExts.has(ext);
+      })
+      .map(f => ({ id: f.id, name: f.name, size: f.size }));
+
+    const folder: DetectedFolder = {
+      folderId: subfolder.id,
+      folderName: subfolder.name,
+      audioFiles,
+      votingFiles,
+      status: 'detected',
+      detectedAt: new Date().toISOString(),
+    };
+
+    detectedFolders.set(subfolder.id, folder);
+    results.push(folder);
+  }
+
+  logger.info(`Scan complete: ${results.length} event folders (${results.filter(f => f.status === 'detected').length} new)`);
+  return results;
+}
+
+/** Start the periodic Drive watcher */
+function startYuliethWatcher(): void {
+  if (watcherTimer) clearInterval(watcherTimer);
+
+  yuliethConfig.isWatching = true;
+  logger.info(`Yulieth watcher started: polling every ${yuliethConfig.pollIntervalSeconds}s`);
+
+  // Immediate scan
+  void scanDriveFolder(yuliethConfig.driveFolderId).catch(err => {
+    logger.error('Watcher scan error', err as Error);
+  });
+
+  watcherTimer = setInterval(() => {
+    void scanDriveFolder(yuliethConfig.driveFolderId).catch(err => {
+      logger.error('Watcher scan error', err as Error);
+    });
+  }, yuliethConfig.pollIntervalSeconds * 1000);
+}
+
+/** Stop the periodic Drive watcher */
+function stopYuliethWatcher(): void {
+  if (watcherTimer) {
+    clearInterval(watcherTimer);
+    watcherTimer = null;
+  }
+  yuliethConfig.isWatching = false;
+  logger.info('Yulieth watcher stopped');
+}
+
+/** Get queue data for the dashboard */
+async function getYuliethQueue(): Promise<{ folders: DetectedFolder[]; stats: { pending: number; processing: number; completed: number; failed: number } }> {
+  const folders = Array.from(detectedFolders.values())
+    .sort((a, b) => b.detectedAt.localeCompare(a.detectedAt));
+
+  const stats = {
+    pending: folders.filter(f => f.status === 'detected' || f.status === 'queued').length,
+    processing: folders.filter(f => f.status === 'processing').length,
+    completed: folders.filter(f => f.status === 'completed').length,
+    failed: folders.filter(f => f.status === 'error').length,
+  };
+
+  return { folders, stats };
+}
+
+/** Enqueue a detected folder for processing */
+async function enqueueDetectedFolder(folderId: string): Promise<{ success: boolean; jobId?: string }> {
+  const folder = detectedFolders.get(folderId);
+  if (!folder) {
+    throw new Error(`Folder ${folderId} not found in detected folders`);
+  }
+  if (folder.status !== 'detected') {
+    throw new Error(`Folder ${folderId} is already ${folder.status}`);
+  }
+
+  folder.status = 'queued';
+  folder.jobId = `job-${Date.now()}`;
+  logger.info(`Enqueued folder: ${folder.folderName} as ${folder.jobId}`);
+
+  return { success: true, jobId: folder.jobId };
 }
 
 // ── Auto-start when run directly ──

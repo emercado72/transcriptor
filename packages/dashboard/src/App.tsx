@@ -3,6 +3,10 @@ import AgentGraph from './components/AgentGraph.js';
 import DetailPanel from './components/DetailPanel.js';
 import Toolbar from './components/Toolbar.js';
 import ChatPanel from './components/ChatPanel.js';
+import ConfigPanel from './components/ConfigPanel.js';
+import QueuePanel from './components/QueuePanel.js';
+import ContextMenu from './components/ContextMenu.js';
+import type { ContextMenuAction } from './components/ContextMenu.js';
 import {
   getDefaultNodes,
   getEdges,
@@ -79,6 +83,15 @@ export default function App() {
   const edges = getEdges();
   const [selectedNode, setSelectedNode] = useState<AgentId | null>(null);
   const [chatAgent, setChatAgent] = useState<AgentId | null>(null);
+
+  // Side panel mode: 'chat' | 'config' | 'queue'
+  type SidePanelMode = 'chat' | 'config' | 'queue';
+  const [sidePanelMode, setSidePanelMode] = useState<SidePanelMode>('chat');
+
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState<{
+    x: number; y: number; agentId: AgentId;
+  } | null>(null);
 
   // ── Agent data ──
   const [statuses, setStatuses] = useState<Record<AgentId, AgentStatus>>(mockStatuses);
@@ -161,8 +174,49 @@ export default function App() {
   // When a node is clicked, open the chat panel for that agent
   const handleSelectNode = useCallback((id: AgentId | null) => {
     setSelectedNode(id);
-    if (id) setChatAgent(id);
+    if (id) {
+      setChatAgent(id);
+      setSidePanelMode('chat');
+    }
   }, []);
+
+  // Right-click on a node → context menu
+  const handleNodeContextMenu = useCallback((id: AgentId, x: number, y: number) => {
+    setContextMenu({ x, y, agentId: id });
+  }, []);
+
+  // Build context menu actions for the right-clicked agent
+  const contextMenuActions: ContextMenuAction[] = contextMenu ? [
+    {
+      label: 'Chat',
+      icon: '💬',
+      onClick: () => {
+        setChatAgent(contextMenu.agentId);
+        setSelectedNode(contextMenu.agentId);
+        setSidePanelMode('chat');
+      },
+    },
+    ...(contextMenu.agentId === 'yulieth' ? [
+      {
+        label: 'Configure',
+        icon: '⚙️',
+        onClick: () => {
+          setChatAgent(contextMenu.agentId);
+          setSelectedNode(contextMenu.agentId);
+          setSidePanelMode('config');
+        },
+      },
+      {
+        label: 'View Queue',
+        icon: '📂',
+        onClick: () => {
+          setChatAgent(contextMenu.agentId);
+          setSelectedNode(contextMenu.agentId);
+          setSidePanelMode('queue');
+        },
+      },
+    ] : []),
+  ] : [];
 
   return (
     <div style={{
@@ -188,6 +242,7 @@ export default function App() {
               selectedNode={selectedNode}
               onSelectNode={handleSelectNode}
               onMoveNode={handleMoveNode}
+              onNodeContextMenu={handleNodeContextMenu}
             />
 
             {/* Keyboard hint */}
@@ -216,14 +271,40 @@ export default function App() {
           )}
         </div>
 
-        {/* Chat side panel */}
-        {chatNodeData && (
+        {/* Side panel: Chat / Config / Queue */}
+        {chatNodeData && sidePanelMode === 'chat' && (
           <ChatPanel
             node={chatNodeData}
             onClose={() => setChatAgent(null)}
           />
         )}
+        {chatNodeData && sidePanelMode === 'config' && chatAgent === 'yulieth' && (
+          <ConfigPanel
+            node={chatNodeData}
+            onClose={() => setChatAgent(null)}
+            onSwitchToChat={() => setSidePanelMode('chat')}
+          />
+        )}
+        {chatNodeData && sidePanelMode === 'queue' && chatAgent === 'yulieth' && (
+          <QueuePanel
+            node={chatNodeData}
+            onClose={() => setChatAgent(null)}
+            onSwitchToChat={() => setSidePanelMode('chat')}
+            onSwitchToConfig={() => setSidePanelMode('config')}
+          />
+        )}
       </div>
+
+      {/* Context menu */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          agentId={contextMenu.agentId}
+          actions={contextMenuActions}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
     </div>
   );
 }
