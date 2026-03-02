@@ -602,10 +602,286 @@ const YULIETH_OWN_TOOLS: ChatCompletionTool[] = [
   },
 ];
 
-// Yulieth gets her own tools PLUS all of Robinson's Tecnoreuniones tools
+// ── Google Workspace Tool Definitions ──
+
+const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
+  // ── Drive ──
+  {
+    type: 'function',
+    function: {
+      name: 'gw_drive_list_files',
+      description: 'List files in a Google Drive folder. Returns file name, type, size, dates, and links.',
+      parameters: {
+        type: 'object',
+        properties: {
+          folderId: { type: 'string', description: 'The Google Drive folder ID to list.' },
+          maxResults: { type: 'number', description: 'Maximum number of files to return. Default 50.' },
+        },
+        required: ['folderId'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gw_drive_search',
+      description: 'Search for files across Google Drive by name. Returns matching files with metadata.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The search text to find in file names.' },
+          maxResults: { type: 'number', description: 'Maximum results. Default 20.' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gw_drive_get_file',
+      description: 'Get metadata for a specific Google Drive file by its ID.',
+      parameters: {
+        type: 'object',
+        properties: {
+          fileId: { type: 'string', description: 'The Google Drive file ID.' },
+        },
+        required: ['fileId'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gw_drive_create_folder',
+      description: 'Create a new folder in Google Drive.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Name for the new folder.' },
+          parentId: { type: 'string', description: 'Parent folder ID. If omitted, creates in root.' },
+        },
+        required: ['name'],
+      },
+    },
+  },
+  // ── Docs ──
+  {
+    type: 'function',
+    function: {
+      name: 'gw_docs_get_content',
+      description: 'Read the full text content of a Google Doc. Returns title and body text.',
+      parameters: {
+        type: 'object',
+        properties: {
+          documentId: { type: 'string', description: 'The Google Document ID (from the URL).' },
+        },
+        required: ['documentId'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gw_docs_create',
+      description: 'Create a new Google Doc with an optional initial body text.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Title of the new document.' },
+          bodyText: { type: 'string', description: 'Optional initial text content.' },
+        },
+        required: ['title'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gw_docs_append',
+      description: 'Append text to the end of an existing Google Doc.',
+      parameters: {
+        type: 'object',
+        properties: {
+          documentId: { type: 'string', description: 'The Google Document ID.' },
+          text: { type: 'string', description: 'Text to append.' },
+        },
+        required: ['documentId', 'text'],
+      },
+    },
+  },
+  // ── Sheets ──
+  {
+    type: 'function',
+    function: {
+      name: 'gw_sheets_read',
+      description: 'Read data from a Google Sheets range. Returns a 2D array of cell values.',
+      parameters: {
+        type: 'object',
+        properties: {
+          spreadsheetId: { type: 'string', description: 'The Spreadsheet ID (from the URL).' },
+          range: { type: 'string', description: 'The A1-notation range, e.g. "Sheet1!A1:D10" or "Sheet1".' },
+        },
+        required: ['spreadsheetId', 'range'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gw_sheets_write',
+      description: 'Write data to a Google Sheets range (overwrites existing data).',
+      parameters: {
+        type: 'object',
+        properties: {
+          spreadsheetId: { type: 'string', description: 'The Spreadsheet ID.' },
+          range: { type: 'string', description: 'The A1-notation range to write to.' },
+          values: {
+            type: 'array',
+            items: { type: 'array', items: { type: 'string' } },
+            description: 'A 2D array of values (rows × columns).',
+          },
+        },
+        required: ['spreadsheetId', 'range', 'values'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gw_sheets_append',
+      description: 'Append rows to the end of a Google Sheet.',
+      parameters: {
+        type: 'object',
+        properties: {
+          spreadsheetId: { type: 'string', description: 'The Spreadsheet ID.' },
+          range: { type: 'string', description: 'The sheet name or range, e.g. "Sheet1".' },
+          rows: {
+            type: 'array',
+            items: { type: 'array', items: { type: 'string' } },
+            description: 'Rows to append (2D array).',
+          },
+        },
+        required: ['spreadsheetId', 'range', 'rows'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gw_sheets_create',
+      description: 'Create a new Google Spreadsheet with optional header row.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Title of the new spreadsheet.' },
+          headers: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Optional column headers for the first row.',
+          },
+        },
+        required: ['title'],
+      },
+    },
+  },
+  // ── Calendar ──
+  {
+    type: 'function',
+    function: {
+      name: 'gw_calendar_list_events',
+      description: 'List upcoming calendar events. Returns summary, dates, location, attendees.',
+      parameters: {
+        type: 'object',
+        properties: {
+          calendarId: { type: 'string', description: 'Calendar ID. Default "primary".' },
+          maxResults: { type: 'number', description: 'Max events to return. Default 20.' },
+          timeMin: { type: 'string', description: 'Earliest event time (ISO 8601). Default now.' },
+          timeMax: { type: 'string', description: 'Latest event time (ISO 8601). If omitted, no upper limit.' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gw_calendar_create_event',
+      description: 'Create a new calendar event with optional attendees and location.',
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: { type: 'string', description: 'Event title/summary.' },
+          start: { type: 'string', description: 'Start date-time in ISO 8601 format.' },
+          end: { type: 'string', description: 'End date-time in ISO 8601 format.' },
+          description: { type: 'string', description: 'Event description.' },
+          location: { type: 'string', description: 'Event location.' },
+          attendees: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'List of attendee email addresses.',
+          },
+          calendarId: { type: 'string', description: 'Calendar ID. Default "primary".' },
+        },
+        required: ['summary', 'start', 'end'],
+      },
+    },
+  },
+  // ── Gmail ──
+  {
+    type: 'function',
+    function: {
+      name: 'gw_gmail_list_messages',
+      description: 'List recent emails. Supports Gmail search queries like "from:user@example.com", "subject:asamblea", "is:unread", "in:inbox".',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Gmail search query. Default "in:inbox". Examples: "from:info@tecnoreuniones.com", "subject:acta is:unread".' },
+          maxResults: { type: 'number', description: 'Max messages to return. Default 20.' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gw_gmail_read_message',
+      description: 'Read the full content of a specific email by its message ID.',
+      parameters: {
+        type: 'object',
+        properties: {
+          messageId: { type: 'string', description: 'The Gmail message ID (from gw_gmail_list_messages).' },
+        },
+        required: ['messageId'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gw_gmail_send',
+      description: 'Send an email from the configured Tecnoreuniones account.',
+      parameters: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient email address.' },
+          subject: { type: 'string', description: 'Email subject line.' },
+          body: { type: 'string', description: 'Plain-text email body.' },
+          cc: { type: 'string', description: 'CC email address (optional).' },
+          bcc: { type: 'string', description: 'BCC email address (optional).' },
+        },
+        required: ['to', 'subject', 'body'],
+      },
+    },
+  },
+];
+
+// Yulieth gets her own tools + Robinson's Tecnoreuniones tools + Google Workspace tools
 const YULIETH_TOOLS: ChatCompletionTool[] = [
   ...YULIETH_OWN_TOOLS,
   ...TECNOREUNIONES_TOOLS,
+  ...GOOGLE_WORKSPACE_TOOLS,
 ];
 
 // ── Tool Executor (Robinson) ──
@@ -741,6 +1017,186 @@ async function executeYuliethTool(name: string, args: Record<string, unknown>): 
         return JSON.stringify({ error: `Pipeline query failed: ${err instanceof Error ? err.message : String(err)}` });
       }
     }
+
+    // ── Google Workspace: Drive ──
+    case 'gw_drive_list_files': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        const data = await gw.gwDriveListFiles(args.folderId as string, (args.maxResults as number) || 50);
+        return JSON.stringify(data, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Drive list failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    case 'gw_drive_search': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        const data = await gw.gwDriveSearch(args.query as string, (args.maxResults as number) || 20);
+        return JSON.stringify(data, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Drive search failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    case 'gw_drive_get_file': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        const data = await gw.gwDriveGetFile(args.fileId as string);
+        return JSON.stringify(data, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Drive get file failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    case 'gw_drive_create_folder': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        const data = await gw.gwDriveCreateFolder(args.name as string, args.parentId as string | undefined);
+        return JSON.stringify(data, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Drive create folder failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+
+    // ── Google Workspace: Docs ──
+    case 'gw_docs_get_content': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        const data = await gw.gwDocsGetContent(args.documentId as string);
+        const json = JSON.stringify(data, null, 2);
+        return json.length > 6000 ? json.substring(0, 6000) + '\n...truncated' : json;
+      } catch (err) {
+        return JSON.stringify({ error: `Docs read failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    case 'gw_docs_create': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        const data = await gw.gwDocsCreate(args.title as string, args.bodyText as string | undefined);
+        return JSON.stringify(data, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Docs create failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    case 'gw_docs_append': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        await gw.gwDocsAppend(args.documentId as string, args.text as string);
+        return JSON.stringify({ success: true, message: 'Text appended successfully.' });
+      } catch (err) {
+        return JSON.stringify({ error: `Docs append failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+
+    // ── Google Workspace: Sheets ──
+    case 'gw_sheets_read': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        const data = await gw.gwSheetsRead(args.spreadsheetId as string, args.range as string);
+        const json = JSON.stringify(data, null, 2);
+        return json.length > 6000 ? json.substring(0, 6000) + '\n...truncated' : json;
+      } catch (err) {
+        return JSON.stringify({ error: `Sheets read failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    case 'gw_sheets_write': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        const data = await gw.gwSheetsWrite(args.spreadsheetId as string, args.range as string, args.values as string[][]);
+        return JSON.stringify(data, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Sheets write failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    case 'gw_sheets_append': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        const data = await gw.gwSheetsAppend(args.spreadsheetId as string, args.range as string, args.rows as string[][]);
+        return JSON.stringify(data, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Sheets append failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    case 'gw_sheets_create': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        const data = await gw.gwSheetsCreate(args.title as string, args.headers as string[] | undefined);
+        return JSON.stringify(data, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Sheets create failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+
+    // ── Google Workspace: Calendar ──
+    case 'gw_calendar_list_events': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        const data = await gw.gwCalendarListEvents(
+          (args.calendarId as string) || 'primary',
+          (args.maxResults as number) || 20,
+          args.timeMin as string | undefined,
+          args.timeMax as string | undefined,
+        );
+        return JSON.stringify(data, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Calendar list failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    case 'gw_calendar_create_event': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        const data = await gw.gwCalendarCreateEvent(
+          args.summary as string,
+          args.start as string,
+          args.end as string,
+          {
+            description: args.description as string | undefined,
+            location: args.location as string | undefined,
+            attendees: args.attendees as string[] | undefined,
+            calendarId: args.calendarId as string | undefined,
+          },
+        );
+        return JSON.stringify(data, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Calendar create event failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+
+    // ── Google Workspace: Gmail ──
+    case 'gw_gmail_list_messages': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        const data = await gw.gwGmailListMessages(
+          (args.query as string) || 'in:inbox',
+          (args.maxResults as number) || 20,
+        );
+        return JSON.stringify(data, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Gmail list failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    case 'gw_gmail_read_message': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        const data = await gw.gwGmailReadMessage(args.messageId as string);
+        return JSON.stringify(data, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Gmail read failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    case 'gw_gmail_send': {
+      try {
+        const gw = await import('@transcriptor/shared');
+        const data = await gw.gwGmailSend(
+          args.to as string,
+          args.subject as string,
+          args.body as string,
+          { cc: args.cc as string | undefined, bcc: args.bcc as string | undefined },
+        );
+        return JSON.stringify(data, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Gmail send failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+
     default:
       // Delegate all Robinson/Tecnoreuniones tools to Robinson's executor
       return executeTool(name, args);
@@ -829,25 +1285,54 @@ Be concise and status-focused in your responses.`,
 
   yulieth: `You are **Yulieth**, the Drive Watcher & Job Queue Agent in the Transcriptor multi-agent system for Colombian property assembly (propiedad horizontal) minutes.
 
-Your role: You are the **intake point** of the entire pipeline. You monitor Google Drive folders for new assembly audio recordings, validate incoming files, create pipeline jobs, and manage the BullMQ job queue. You are the first agent that kicks off the transcription pipeline.
+Your role: You are the **intake point** of the entire pipeline. You monitor Google Drive folders for new assembly audio recordings, validate incoming files, create pipeline jobs, and manage the BullMQ job queue. You also have **full access to Tecnoreuniones' Google Workspace** (Drive, Docs, Sheets, Calendar, and Gmail).
 
 ## Your Own Capabilities
 - **check_queue_status**: See how many jobs are pending, processing, completed, or failed in the BullMQ queue.
 - **check_drive_folders**: Scan a Google Drive folder for event subfolders with audio/voting files.
 - **get_pipeline_jobs**: Query the local PostgreSQL database for pipeline job history (filter by status, see recent activity).
 
+## Google Workspace — Drive, Docs, Sheets, Calendar, Gmail
+You are connected to Tecnoreuniones' Google Workspace account. You can read, create, and manage files across all Google services:
+
+### Drive
+- **gw_drive_list_files**: List files in a Drive folder.
+- **gw_drive_search**: Search for files by name across the entire Drive.
+- **gw_drive_get_file**: Get metadata for a specific file.
+- **gw_drive_create_folder**: Create a new folder.
+
+### Google Docs
+- **gw_docs_get_content**: Read a Google Doc's full text content.
+- **gw_docs_create**: Create a new Google Doc (optionally with initial text).
+- **gw_docs_append**: Append text to an existing Google Doc.
+
+### Google Sheets
+- **gw_sheets_read**: Read cell data from a spreadsheet range.
+- **gw_sheets_write**: Write/overwrite data in a spreadsheet range.
+- **gw_sheets_append**: Append rows to the end of a spreadsheet.
+- **gw_sheets_create**: Create a new spreadsheet (optionally with headers).
+
+### Google Calendar
+- **gw_calendar_list_events**: List upcoming calendar events.
+- **gw_calendar_create_event**: Create a new calendar event with optional attendees.
+
+### Gmail
+- **gw_gmail_list_messages**: Search and list emails (supports Gmail query syntax: "from:", "subject:", "is:unread", etc.).
+- **gw_gmail_read_message**: Read the full content of a specific email.
+- **gw_gmail_send**: Send an email from the Tecnoreuniones account.
+
 ## Robinson Delegation — Tecnoreuniones Data Access
-You have full access to **Robinson's** data tools. Robinson is the Data Extraction Agent who connects to the Tecnoreuniones MySQL database. Whenever you need information about assemblies, attendance, voting questions, quorum, results, or any assembly-related data from the Tecnoreuniones platform, use Robinson's tools directly:
+You have full access to **Robinson's** data tools for querying the Tecnoreuniones MySQL database:
 
 - **fetch_active_assemblies**: List all currently active assemblies.
-- **fetch_assembly_metadata**: Get full metadata for a specific assembly (client name, date, location, type).
+- **fetch_assembly_metadata**: Get full metadata for a specific assembly.
 - **fetch_assembly_status**: Get quorum, attendee counts, and assembly state.
-- **fetch_attendance_list**: Get the attendance/delegate list with check-in times and coefficients.
-- **fetch_question_list**: List all voting questions and their options for an assembly.
-- **fetch_voting_results**: Get aggregated voting results for a specific question.
+- **fetch_attendance_list**: Get the attendance/delegate list.
+- **fetch_question_list**: List all voting questions and their options.
+- **fetch_voting_results**: Get aggregated voting results.
 - **fetch_voting_scrutiny**: Get per-unit voting detail.
 - **fetch_quorum_snapshot**: Get quorum at question close time.
-- **fetch_last_answered_question**: Get the last voted question in an assembly.
+- **fetch_last_answered_question**: Get the last voted question.
 - **run_sql_query**: Run any read-only SELECT query on the Tecnoreuniones MySQL database.
 
 ### Tecnoreuniones Database Schema (for run_sql_query)
@@ -880,8 +1365,10 @@ You have full access to **Robinson's** data tools. Robinson is the Data Extracti
 3. After receiving tool results, write your final answer immediately — do NOT make more tool calls.
 4. Present results in Markdown with tables, bold labels, and bullet points.
 5. Data is in Spanish. You can respond in Spanish or English depending on the user's language.
-6. For questions about Tecnoreuniones data, use Robinson's tools. For questions about the pipeline/queue, use your own tools.
-7. You are **not** Robinson — you are Yulieth. But you can access Robinson's data when needed.`,
+6. For Tecnoreuniones assembly data → use Robinson's tools.
+7. For Google Drive/Docs/Sheets/Calendar/Gmail → use Google Workspace tools.
+8. For pipeline/queue status → use your own tools.
+9. If Google credentials are not configured, tell the user they need to set up GOOGLE_SERVICE_ACCOUNT_KEY_FILE or OAuth2 credentials.`,
 
   chucho: `You are **Chucho**, the Audio Preprocessor Agent in the Transcriptor system.
 

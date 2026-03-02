@@ -10,4 +10,27 @@ export {
   type DriveFile,
   type DriveClient,
 } from './googleDrive.js';
+export {
+  initGoogleWorkspace,
+  gwDriveListFiles,
+  gwDriveSearch,
+  gwDriveGetFile,
+  gwDriveCreateFolder,
+  gwDocsGetContent,
+  gwDocsCreate,
+  gwDocsAppend,
+  gwSheetsRead,
+  gwSheetsWrite,
+  gwSheetsAppend,
+  gwSheetsCreate,
+  gwCalendarListEvents,
+  gwCalendarCreateEvent,
+  gwGmailListMessages,
+  gwGmailReadMessage,
+  gwGmailSend,
+  type GoogleWorkspaceClients,
+  type GWFile,
+  type GWEvent,
+  type GWEmail,
+} from './googleWorkspace.js';
 export { getRedisClient, closeRedis } from './redis.js';

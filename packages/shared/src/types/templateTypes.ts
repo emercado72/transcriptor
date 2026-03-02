@@ -39,6 +39,9 @@ export interface EnvConfig {
   googleClientId: string;
   googleClientSecret: string;
   googleRedirectUri: string;
+  googleRefreshToken: string;
+  googleServiceAccountKeyFile: string;
+  googleImpersonateEmail: string;
   googleDriveRootFolderId: string;
   tecnoreunionesApiUrl: string;
   tecnoreunionesApiKey: string;
