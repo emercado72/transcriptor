@@ -1562,3 +1562,6 @@ async function handleAgentChat(agentId: string, message: string): Promise<string
     return `❌ Error: ${errMsg}`;
   }
 }
+
+// ── Auto-start when run directly ──
+startServer();

@@ -66,59 +66,82 @@ export interface GWEmail {
 // ── Singleton ──
 
 let _clients: GoogleWorkspaceClients | null = null;
+let _hasOAuth2 = false;
 
 /**
- * Initialize Google Workspace clients. Uses Service Account if key file exists,
- * otherwise falls back to OAuth2 with refresh token.
+ * Initialize Google Workspace clients.
+ *
+ * Hybrid strategy:
+ *   - If OAuth2 refresh token exists → use it for ALL services (Drive, Docs, Sheets, Calendar, Gmail).
+ *     This is required for @gmail.com accounts.
+ *   - If only Service Account exists → use it for Drive, Docs, Sheets (files must be shared with the SA email).
+ *     Gmail/Calendar won't work unless domain-wide delegation is configured (Google Workspace only).
+ *   - If both exist → OAuth2 for Gmail/Calendar, Service Account for Drive/Docs/Sheets.
  */
 export function initGoogleWorkspace(): GoogleWorkspaceClients {
   if (_clients) return _clients;
 
   const keyFile = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE || '';
+  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN || '';
+  const clientId = process.env.GOOGLE_CLIENT_ID || '';
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET || '';
   const impersonateEmail = process.env.GOOGLE_IMPERSONATE_EMAIL || '';
 
-  let auth: InstanceType<typeof google.auth.GoogleAuth> | InstanceType<typeof google.auth.OAuth2>;
+  // Build OAuth2 client (if credentials available)
+  let oauth2Auth: InstanceType<typeof google.auth.OAuth2> | null = null;
+  if (clientId && clientSecret && refreshToken) {
+    logger.info('OAuth2 credentials found — using for Gmail/Calendar (and Drive/Docs/Sheets if no SA)');
+    oauth2Auth = new google.auth.OAuth2(clientId, clientSecret, 'urn:ietf:wg:oauth:2.0:oob');
+    oauth2Auth.setCredentials({ refresh_token: refreshToken });
+  }
 
+  // Build Service Account client (if key file available)
+  // NOTE: Do NOT set subject/impersonate for regular @gmail.com accounts —
+  // domain-wide delegation only works with Google Workspace domains.
+  let saAuth: InstanceType<typeof google.auth.GoogleAuth> | null = null;
   if (keyFile && existsSync(keyFile)) {
-    // ─── Service Account auth ───
-    logger.info(`Using Service Account from ${keyFile}`);
+    logger.info(`Service Account found: ${keyFile}`);
     const keyData = JSON.parse(readFileSync(keyFile, 'utf-8'));
-
-    auth = new google.auth.GoogleAuth({
+    const isWorkspaceDomain = impersonateEmail && !impersonateEmail.endsWith('@gmail.com');
+    if (impersonateEmail && !isWorkspaceDomain) {
+      logger.warn(`Impersonate email ${impersonateEmail} is a @gmail.com account — skipping domain-wide delegation`);
+    }
+    saAuth = new google.auth.GoogleAuth({
       credentials: keyData,
       scopes: [
         'https://www.googleapis.com/auth/drive',
         'https://www.googleapis.com/auth/documents',
         'https://www.googleapis.com/auth/spreadsheets',
-        'https://www.googleapis.com/auth/calendar',
-        'https://www.googleapis.com/auth/gmail.modify',
+        ...(isWorkspaceDomain ? [
+          'https://www.googleapis.com/auth/calendar',
+          'https://www.googleapis.com/auth/gmail.modify',
+        ] : []),
       ],
-      ...(impersonateEmail ? { clientOptions: { subject: impersonateEmail } } : {}),
+      // Only impersonate if target is a Google Workspace domain (not @gmail.com)
+      ...(isWorkspaceDomain ? { clientOptions: { subject: impersonateEmail } } : {}),
     });
-  } else {
-    // ─── OAuth2 auth ───
-    const clientId = process.env.GOOGLE_CLIENT_ID || '';
-    const clientSecret = process.env.GOOGLE_CLIENT_SECRET || '';
-    const redirectUri = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3001/auth/google/callback';
-    const refreshToken = process.env.GOOGLE_REFRESH_TOKEN || '';
-
-    if (!clientId || !clientSecret) {
-      logger.warn('No Google credentials configured — Google Workspace tools will return errors');
-    }
-
-    const oauth2 = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
-    if (refreshToken) {
-      oauth2.setCredentials({ refresh_token: refreshToken });
-    }
-    auth = oauth2;
   }
 
+  // Determine which auth to use for each service
+  // Priority: OAuth2 for everything if available, else SA for file-based services
+  const driveDocsAuth = oauth2Auth || saAuth;
+  // Gmail/Calendar with @gmail.com REQUIRE OAuth2 — SA alone won't work
+  const gmailCalAuth = oauth2Auth; // null if no OAuth2 configured
+
+  if (!driveDocsAuth) {
+    logger.warn('No Google credentials configured — Google Workspace tools will return errors');
+  }
+  if (!gmailCalAuth) {
+    logger.warn('No OAuth2 credentials — Gmail/Calendar tools will not work for @gmail.com');
+  }
+  _hasOAuth2 = !!gmailCalAuth;
+
   _clients = {
-    drive: google.drive({ version: 'v3', auth: auth as any }),
-    docs: google.docs({ version: 'v1', auth: auth as any }),
-    sheets: google.sheets({ version: 'v4', auth: auth as any }),
-    calendar: google.calendar({ version: 'v3', auth: auth as any }),
-    gmail: google.gmail({ version: 'v1', auth: auth as any }),
+    drive: google.drive({ version: 'v3', auth: (driveDocsAuth) as any }),
+    docs: google.docs({ version: 'v1', auth: (driveDocsAuth) as any }),
+    sheets: google.sheets({ version: 'v4', auth: (driveDocsAuth) as any }),
+    calendar: google.calendar({ version: 'v3', auth: (gmailCalAuth ?? driveDocsAuth) as any }),
+    gmail: google.gmail({ version: 'v1', auth: (gmailCalAuth ?? driveDocsAuth) as any }),
   };
 
   logger.info('Google Workspace clients initialized (Drive, Docs, Sheets, Calendar, Gmail)');
@@ -418,6 +441,7 @@ export async function gwCalendarListEvents(
   timeMaxISO?: string,
 ): Promise<GWEvent[]> {
   const { calendar } = initGoogleWorkspace();
+  if (!_hasOAuth2) throw new Error('Calendar requires OAuth2 credentials (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN). Service Account cannot access @gmail.com calendars.');
   logger.info(`Calendar: listing events from ${calendarId}`);
 
   const now = new Date().toISOString();
@@ -459,6 +483,7 @@ export async function gwCalendarCreateEvent(
   },
 ): Promise<GWEvent> {
   const { calendar } = initGoogleWorkspace();
+  if (!_hasOAuth2) throw new Error('Calendar requires OAuth2 credentials (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN). Service Account cannot access @gmail.com calendars.');
   const calendarId = opts?.calendarId || 'primary';
   logger.info(`Calendar: creating event "${summary}" on ${calendarId}`);
 
@@ -500,6 +525,7 @@ export async function gwGmailListMessages(
   maxResults = 20,
 ): Promise<GWEmail[]> {
   const { gmail } = initGoogleWorkspace();
+  if (!_hasOAuth2) throw new Error('Gmail requires OAuth2 credentials (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN). Service Account cannot access @gmail.com mailboxes.');
   logger.info(`Gmail: listing messages with query "${query}"`);
 
   const list = await gmail.users.messages.list({
@@ -537,6 +563,7 @@ export async function gwGmailListMessages(
 /** Read a full email body */
 export async function gwGmailReadMessage(messageId: string): Promise<GWEmail> {
   const { gmail } = initGoogleWorkspace();
+  if (!_hasOAuth2) throw new Error('Gmail requires OAuth2 credentials (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN). Service Account cannot access @gmail.com mailboxes.');
   logger.info(`Gmail: reading message ${messageId}`);
 
   const res = await gmail.users.messages.get({
@@ -592,6 +619,7 @@ export async function gwGmailSend(
   opts?: { cc?: string; bcc?: string },
 ): Promise<{ messageId: string; threadId: string }> {
   const { gmail } = initGoogleWorkspace();
+  if (!_hasOAuth2) throw new Error('Gmail requires OAuth2 credentials (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN). Service Account cannot access @gmail.com mailboxes.');
   logger.info(`Gmail: sending email to ${to}`);
 
   const rawHeaders = [
