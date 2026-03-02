@@ -1,3 +1,5 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
 import cors from 'cors';
 import { sql } from 'drizzle-orm';
@@ -154,8 +156,18 @@ export function startServer(port?: number): void {
     }
   });
 
+  // ── Serve dashboard static files ──
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const dashboardDist = path.resolve(__dirname, '../../dashboard/dist');
+  app.use(express.static(dashboardDist));
+  // SPA fallback: any non-API route serves index.html
+  app.get('*', (_req, res) => {
+    res.sendFile(path.join(dashboardDist, 'index.html'));
+  });
+
   app.listen(serverPort, () => {
     logger.info(`Gloria review server running on http://localhost:${serverPort}`);
+    logger.info(`Dashboard served from ${dashboardDist}`);
   });
 }
 

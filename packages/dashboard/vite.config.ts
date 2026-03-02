@@ -3,14 +3,4 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
-  server: {
-    port: 5173,
-    proxy: {
-      '/api': {
-        target: 'http://localhost:3001',
-        changeOrigin: true,
-        timeout: 180_000,       // 3 min — LLM tool loops can be slow
-      },
-    },
-  },
 });
