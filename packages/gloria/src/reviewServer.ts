@@ -1,8 +1,10 @@
 import express from 'express';
 import cors from 'cors';
 import { sql } from 'drizzle-orm';
+import OpenAI from 'openai';
 import { createLogger, getEnvConfig, getDb } from '@transcriptor/shared';
 import type { JobId, SectionId } from '@transcriptor/shared';
+import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions.js';
 
 const logger = createLogger('gloria');
 
@@ -370,241 +372,463 @@ async function getPipelineOverview(): Promise<PipelineOverviewInfo> {
   };
 }
 
-// ── Agent Chat handler ──
+// ── Groq LLM Client ──
+
+let groqClient: OpenAI | null = null;
+
+function getGroqClient(): OpenAI {
+  if (!groqClient) {
+    const env = getEnvConfig();
+    if (!env.groqApiKey) {
+      throw new Error('GROQ_API_KEY is not set in environment');
+    }
+    groqClient = new OpenAI({
+      apiKey: env.groqApiKey,
+      baseURL: 'https://api.groq.com/openai/v1',
+    });
+  }
+  return groqClient;
+}
+
+function getGroqModel(): string {
+  return getEnvConfig().groqModel || 'openai/gpt-oss-120b';
+}
+
+// ── Tecnoreuniones Tool Definitions ──
+
+const TECNOREUNIONES_TOOLS: ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'fetch_active_assemblies',
+      description: 'List all currently active assemblies (asambleas) in the Tecnoreuniones platform. No parameters required.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'admin_login',
+      description: 'Authenticate with the Tecnoreuniones API. Returns a session token and the default assembly ID. Must be called before most other operations.',
+      parameters: {
+        type: 'object',
+        properties: {
+          usuario: { type: 'string', description: 'Admin username. Defaults to "admin" if not specified.' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fetch_assembly_metadata',
+      description: 'Get full metadata for a specific assembly (asamblea), including client name, date, location, type (ordinaria/extraordinaria), and configuration.',
+      parameters: {
+        type: 'object',
+        properties: {
+          idAsamblea: { type: 'number', description: 'The assembly ID number.' },
+        },
+        required: ['idAsamblea'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fetch_attendance_list',
+      description: 'Get the attendance/delegate list for an assembly. Returns all property owners, their units, representation type, check-in times, and coefficients.',
+      parameters: {
+        type: 'object',
+        properties: {
+          idAsamblea: { type: 'number', description: 'The assembly ID number.' },
+        },
+        required: ['idAsamblea'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fetch_question_list',
+      description: 'List all voting questions (preguntas) for an assembly, including their text, number of options, and whether they are active.',
+      parameters: {
+        type: 'object',
+        properties: {
+          idAsamblea: { type: 'number', description: 'The assembly ID number.' },
+        },
+        required: ['idAsamblea'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fetch_voting_results',
+      description: 'Get aggregated voting results for a specific question in an assembly. Returns vote counts, nominal values, and coefficient percentages per option.',
+      parameters: {
+        type: 'object',
+        properties: {
+          idAsamblea: { type: 'number', description: 'The assembly ID number.' },
+          idPregunta: { type: 'number', description: 'The question ID number.' },
+        },
+        required: ['idAsamblea', 'idPregunta'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fetch_voting_scrutiny',
+      description: 'Get detailed per-unit voting scrutiny for a question. Shows how each property owner voted, their coefficient, and timestamp.',
+      parameters: {
+        type: 'object',
+        properties: {
+          idAsamblea: { type: 'number', description: 'The assembly ID number.' },
+          idPregunta: { type: 'number', description: 'The question ID number.' },
+        },
+        required: ['idAsamblea', 'idPregunta'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fetch_assembly_status',
+      description: 'Get current assembly status including quorum percentages, attendee counts, state (open/closed), and operational data.',
+      parameters: {
+        type: 'object',
+        properties: {
+          idAsamblea: { type: 'number', description: 'The assembly ID number.' },
+        },
+        required: ['idAsamblea'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fetch_quorum_snapshot',
+      description: 'Get a quorum snapshot for a specific closed question, showing quorum percentage and attendee count at the time the question was closed.',
+      parameters: {
+        type: 'object',
+        properties: {
+          idAsamblea: { type: 'number', description: 'The assembly ID number.' },
+          idPregunta: { type: 'number', description: 'The question ID number.' },
+        },
+        required: ['idAsamblea', 'idPregunta'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'fetch_admin_info',
+      description: 'Get information about the currently authenticated administrator.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'call_raw_service',
+      description: 'Call any Tecnoreuniones service by its numeric ID with arbitrary parameters. Use this for services not covered by other tools.',
+      parameters: {
+        type: 'object',
+        properties: {
+          serviceId: { type: 'number', description: 'The Tecnoreuniones service number.' },
+          params: {
+            type: 'object',
+            description: 'Key-value parameters to send to the service.',
+            additionalProperties: { type: 'string' },
+          },
+        },
+        required: ['serviceId'],
+      },
+    },
+  },
+];
+
+// ── Tool Executor ──
+
+async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
+  const adapter = await import('@transcriptor/robinson');
+
+  // Auto-login if needed for authenticated calls
+  const ensureAuth = async () => {
+    try { adapter.getToken(); } catch { await adapter.adminLogin('admin'); }
+  };
+
+  try {
+    switch (name) {
+      case 'fetch_active_assemblies': {
+        const data = await adapter.fetchActiveAssemblies();
+        return JSON.stringify(data, null, 2);
+      }
+      case 'admin_login': {
+        const usuario = (args.usuario as string) || 'admin';
+        const result = await adapter.adminLogin(usuario);
+        return JSON.stringify(result);
+      }
+      case 'fetch_assembly_metadata': {
+        await ensureAuth();
+        const id = args.idAsamblea as number;
+        adapter.setAssemblyContext(id);
+        const data = await adapter.fetchAssemblyMetadata(id);
+        return JSON.stringify(data ?? { info: 'no metadata returned' }, null, 2);
+      }
+      case 'fetch_attendance_list': {
+        await ensureAuth();
+        const id = args.idAsamblea as number;
+        adapter.setAssemblyContext(id);
+        const raw = await adapter.fetchAttendanceList(id);
+        const mapped = adapter.mapAttendance(raw);
+        return JSON.stringify({
+          total: mapped.length,
+          present: mapped.filter(r => r.status !== 'absent').length,
+          absent: mapped.filter(r => r.status === 'absent').length,
+          records: mapped.slice(0, 50), // Limit to avoid token overflow
+        }, null, 2);
+      }
+      case 'fetch_question_list': {
+        await ensureAuth();
+        const id = args.idAsamblea as number;
+        adapter.setAssemblyContext(id);
+        const data = await adapter.fetchQuestionList(id);
+        return JSON.stringify(data, null, 2);
+      }
+      case 'fetch_voting_results': {
+        await ensureAuth();
+        const asmId = args.idAsamblea as number;
+        const qId = args.idPregunta as number;
+        adapter.setAssemblyContext(asmId);
+        const data = await adapter.fetchVotingResults(asmId, qId);
+        return JSON.stringify(data, null, 2);
+      }
+      case 'fetch_voting_scrutiny': {
+        await ensureAuth();
+        const asmId = args.idAsamblea as number;
+        const qId = args.idPregunta as number;
+        adapter.setAssemblyContext(asmId);
+        const data = await adapter.fetchVotingScrutiny(asmId, qId);
+        return JSON.stringify(data, null, 2);
+      }
+      case 'fetch_assembly_status': {
+        await ensureAuth();
+        const id = args.idAsamblea as number;
+        adapter.setAssemblyContext(id);
+        const data = await adapter.fetchAssemblyStatus(id);
+        return JSON.stringify(data ?? { info: 'no status returned' }, null, 2);
+      }
+      case 'fetch_quorum_snapshot': {
+        await ensureAuth();
+        const asmId = args.idAsamblea as number;
+        const qId = args.idPregunta as number;
+        const data = await adapter.fetchQuorumSnapshot(asmId, qId);
+        return JSON.stringify(data ?? { info: 'no quorum snapshot available' }, null, 2);
+      }
+      case 'fetch_admin_info': {
+        await ensureAuth();
+        const data = await adapter.fetchAdminInfo();
+        return JSON.stringify(data ?? { info: 'no admin info returned' }, null, 2);
+      }
+      case 'call_raw_service': {
+        const svcId = args.serviceId as number;
+        const params = (args.params || {}) as Record<string, string | number>;
+        try { params['token'] = adapter.getToken(); } catch { /* ok */ }
+        const data = await adapter.callService(svcId, params);
+        const json = JSON.stringify(data, null, 2);
+        return json.length > 4000 ? json.substring(0, 4000) + '\n...truncated' : json;
+      }
+      default:
+        return JSON.stringify({ error: `Unknown tool: ${name}` });
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return JSON.stringify({ error: msg });
+  }
+}
+
+// ── Agent System Prompts ──
+
+const AGENT_SYSTEM_PROMPTS: Record<string, string> = {
+  robinson: `You are **Robinson**, the Data Extraction Agent in the Transcriptor multi-agent system for Colombian property assembly (propiedad horizontal) minutes.
+
+Your role: You connect to the **Tecnoreuniones** platform API to extract real-time assembly data — attendance lists, voting results, quorum snapshots, question lists, and assembly metadata.
+
+You have access to tools that query the Tecnoreuniones API. Use them to answer user questions. When you need data:
+1. You do NOT need to call admin_login — the system authenticates automatically.
+2. Call the appropriate tool(s) with the correct assembly ID.
+3. When you need multiple pieces of data, call ALL the tools you need in a SINGLE response (parallel tool calls) — do NOT call them one at a time.
+4. Present the results clearly in Markdown with bullet points, bold labels, and tables where appropriate.
+
+Important:
+- Assembly IDs are numeric (e.g., 2, 26009).
+- Always present data in a human-friendly format, not raw JSON.
+- If a tool returns an error, skip that data and present what you have.
+- You can understand Spanish and English. The data is in Spanish.
+- Summarize large datasets instead of dumping everything.
+- If the user asks something you can't answer with your tools, say so honestly.`,
+
+  gloria: `You are **Gloria**, the Review & QA Agent in the Transcriptor system.
+
+Your role: You review assembled draft minutes for quality, completeness, and accuracy before final delivery to the client.
+
+You can answer questions about:
+- Pending drafts awaiting review
+- Review status and progress
+- Quality standards and checks you perform
+- The review workflow
+
+Be professional, detail-oriented, and thorough in your responses.`,
+
+  supervisor: `You are **Supervisor**, the Pipeline Orchestrator in the Transcriptor system.
+
+Your role: You coordinate the entire pipeline — from audio detection through transcription, sectioning, redaction, assembly, and review. You track job progress and handle failures.
+
+You can answer questions about:
+- Pipeline status and active jobs
+- Job queue and processing stages
+- System health and agent coordination
+- Error handling and retry strategies
+
+Be concise and status-focused in your responses.`,
+
+  yulieth: `You are **Yulieth**, the Drive Watcher & Job Queue Agent in the Transcriptor system.
+
+Your role: You monitor Google Drive folders for new assembly audio recordings, detect new files, create pipeline jobs, and manage the job queue.
+
+You can answer questions about:
+- How file detection works
+- Job queue management
+- Google Drive integration
+- File formats and naming conventions
+
+Be helpful and explain your workflow clearly.`,
+
+  chucho: `You are **Chucho**, the Audio Preprocessor Agent in the Transcriptor system.
+
+Your role: You take raw assembly audio files and preprocess them — normalizing volume, splitting into segments, removing silence, and preparing audio for transcription.
+
+You can answer questions about:
+- Audio preprocessing pipeline
+- Supported formats and codecs
+- Segment splitting strategies
+- Audio quality optimization
+
+Be technical but accessible in your explanations.`,
+
+  jaime: `You are **Jaime**, the Transcription & Sectioning Agent in the Transcriptor system.
+
+Your role: You transcribe preprocessed audio segments using speech-to-text and then organize the transcript into logical sections matching the assembly agenda.
+
+You can answer questions about:
+- Transcription accuracy and speaker identification
+- Section detection (agenda items, voting moments, discussions)
+- How you handle overlapping speech
+- The sectioning algorithm
+
+Be detailed and precise in your responses.`,
+
+  lina: `You are **Lina**, the AI Redaction Engine in the Transcriptor system.
+
+Your role: You take sectioned transcripts and redact them into formal legal-style minutes (actas de asamblea), using proper Colombian property law language and format.
+
+You can answer questions about:
+- The redaction process and style
+- Legal language standards
+- How you handle voting results and quorum in the text
+- Template formatting and glossary application
+
+Be articulate and formal in your responses.`,
+
+  fannery: `You are **Fannery**, the Document Assembly Agent in the Transcriptor system.
+
+Your role: You take redacted sections and assemble them into the final Word document (.docx), applying templates, headers, footers, page numbers, and proper formatting.
+
+You can answer questions about:
+- Document assembly and formatting
+- Template system and styles
+- How sections are merged
+- Final output specifications
+
+Be organized and detail-oriented in your responses.`,
+};
+
+// ── LLM-Powered Chat Handler ──
 
 async function handleAgentChat(agentId: string, message: string): Promise<string> {
   logger.info(`Chat request for agent ${agentId}: ${message.substring(0, 100)}`);
 
-  switch (agentId) {
-    case 'robinson':
-      return handleRobinsonChat(message);
-    case 'yulieth':
-      return handleGenericChat('Yulieth', 'Drive Watcher & Job Queue', message);
-    case 'chucho':
-      return handleGenericChat('Chucho', 'Audio Preprocessor', message);
-    case 'jaime':
-      return handleGenericChat('Jaime', 'Transcription & Sectioning', message);
-    case 'lina':
-      return handleGenericChat('Lina', 'AI Redaction Engine', message);
-    case 'fannery':
-      return handleGenericChat('Fannery', 'Document Assembly', message);
-    case 'gloria':
-      return handleGloriaChat(message);
-    case 'supervisor':
-      return handleSupervisorChat(message);
-    default:
-      return `Unknown agent: ${agentId}`;
+  const systemPrompt = AGENT_SYSTEM_PROMPTS[agentId];
+  if (!systemPrompt) {
+    return `Unknown agent: ${agentId}`;
   }
-}
 
-// ── Robinson: live queries against Tecnoreuniones ──
+  // Robinson gets Tecnoreuniones tools; other agents get pure conversation
+  const isRobinson = agentId === 'robinson';
 
-async function handleRobinsonChat(message: string): Promise<string> {
-  // Dynamic import to avoid circular dependency at module load time
-  const adapter = await import('@transcriptor/robinson');
-  const {
-    callService,
-    fetchActiveAssemblies,
-    fetchAssemblyMetadata,
-    fetchAttendanceList,
-    fetchQuestionList,
-    fetchVotingResults,
-    fetchAssemblyStatus,
-    fetchAdminInfo,
-    fetchQuorumSnapshot,
-    fetchVotingScrutiny,
-    adminLogin,
-    setAssemblyContext,
-    getToken,
-    mapAttendance,
-  } = adapter;
-
-  const msg = message.toLowerCase();
+  const messages: ChatCompletionMessageParam[] = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: message },
+  ];
 
   try {
-    // ── Active assemblies ──
-    if (msg.includes('active') && (msg.includes('assembl') || msg.includes('asamblea'))) {
-      const assemblies = await fetchActiveAssemblies();
-      if (!assemblies.length) return 'No active assemblies found at this time.';
-      const lines = assemblies.map((a: Record<string, unknown>) =>
-        `• **${a.cliente}** (ID: ${a.idAsamblea}, logo: ${a.logo})`
-      );
-      return `Found ${assemblies.length} active assemblies:\n\n${lines.join('\n')}`;
-    }
+    const client = getGroqClient();
+    const model = getGroqModel();
 
-    // ── Login ──
-    if (msg.includes('login') || msg.includes('log in') || msg.includes('authenticate')) {
-      const userMatch = message.match(/user(?:name)?[:\s]+(\S+)/i);
-      const usuario = userMatch?.[1] || 'admin';
-      const result = await adminLogin(usuario);
-      return `✅ Logged in successfully.\n\n• Assembly ID: **${result.idAsamblea}**\n• Token: \`${result.token.substring(0, 20)}…\``;
-    }
+    // First LLM call
+    const response = await client.chat.completions.create({
+      model,
+      messages,
+      tools: isRobinson ? TECNOREUNIONES_TOOLS : undefined,
+      temperature: 0.3,
+      max_tokens: 4096,
+    });
 
-    // ── Assembly metadata ──
-    if (msg.includes('metadata') || msg.includes('info') || msg.includes('assembly') || msg.includes('asamblea')) {
-      const idMatch = message.match(/(?:id|asamblea|assembly)\s*[:#]?\s*(\d+)/i);
-      if (!idMatch) return 'Please specify an assembly ID. Example: "assembly info id 123"';
-      const id = Number(idMatch[1]);
-      let token: string;
-      try { token = getToken(); } catch { await adminLogin('admin'); }
-      setAssemblyContext(id);
-      const meta = await fetchAssemblyMetadata(id);
-      const fields = Object.entries(meta)
-        .filter(([, v]) => v != null && v !== '')
-        .map(([k, v]) => `• **${k}**: ${v}`)
-        .join('\n');
-      return `Assembly **${id}** metadata:\n\n${fields}`;
-    }
+    let choice = response.choices[0];
+    if (!choice) return 'No response from LLM.';
 
-    // ── Attendance ──
-    if (msg.includes('attendance') || msg.includes('attendees') || msg.includes('asistentes') || msg.includes('delegate')) {
-      const idMatch = message.match(/(?:id|asamblea|assembly)\s*[:#]?\s*(\d+)/i);
-      if (!idMatch) return 'Please specify an assembly ID. Example: "attendance for assembly 123"';
-      const id = Number(idMatch[1]);
-      try { getToken(); } catch { await adminLogin('admin'); }
-      setAssemblyContext(id);
-      const raw = await fetchAttendanceList(id);
-      const records = mapAttendance(raw);
-      if (!records.length) return `No attendance records found for assembly ${id}.`;
-      const present = records.filter((r) => r.status !== 'absent');
-      const absent = records.filter((r) => r.status === 'absent');
-      const lines = present.slice(0, 20).map((r) =>
-        `• ${r.ownerName} (${r.unit}) — ${r.status} — coef: ${r.coefficientExpected}`
-      );
-      let reply = `Assembly **${id}** attendance: **${present.length}** present, **${absent.length}** absent, **${records.length}** total.\n\n${lines.join('\n')}`;
-      if (present.length > 20) reply += `\n\n…and ${present.length - 20} more.`;
-      return reply;
-    }
+    // Tool-calling loop (Robinson only, max 10 iterations)
+    let iterations = 0;
+    while (choice.finish_reason === 'tool_calls' && choice.message.tool_calls && iterations < 10) {
+      iterations++;
+      logger.info(`Robinson tool call iteration ${iterations}`, {
+        tools: choice.message.tool_calls.map(tc => tc.function.name),
+      });
 
-    // ── Quorum ──
-    if (msg.includes('quorum') || msg.includes('status')) {
-      const idMatch = message.match(/(?:id|asamblea|assembly)\s*[:#]?\s*(\d+)/i);
-      if (!idMatch) return 'Please specify an assembly ID. Example: "quorum for assembly 123"';
-      const id = Number(idMatch[1]);
-      try { getToken(); } catch { await adminLogin('admin'); }
-      setAssemblyContext(id);
-      const status = await fetchAssemblyStatus(id);
-      const fields = Object.entries(status)
-        .filter(([, v]) => v != null && v !== '')
-        .map(([k, v]) => `• **${k}**: ${v}`)
-        .join('\n');
-      return `Assembly **${id}** status:\n\n${fields}`;
-    }
+      // Add assistant message with tool calls
+      messages.push(choice.message);
 
-    // ── Questions ──
-    if (msg.includes('question') || msg.includes('pregunta') || msg.includes('voting') || msg.includes('votaci')) {
-      const idMatch = message.match(/(?:id|asamblea|assembly)\s*[:#]?\s*(\d+)/i);
-      if (!idMatch) return 'Please specify an assembly ID. Example: "questions for assembly 123"';
-      const id = Number(idMatch[1]);
-      try { getToken(); } catch { await adminLogin('admin'); }
-      setAssemblyContext(id);
-      const questions = await fetchQuestionList(id);
-      if (!questions.length) return `No questions found for assembly ${id}.`;
-      const lines = questions.map((q: Record<string, unknown>) =>
-        `• **Q${q.idPregunta}**: ${q.encabezadoPregunta} (options: ${q.opciones}, active: ${q.activa ? 'yes' : 'no'})`
-      );
-      return `Assembly **${id}** has ${questions.length} questions:\n\n${lines.join('\n')}`;
-    }
-
-    // ── Voting results ──
-    if (msg.includes('result') || msg.includes('resultado') || msg.includes('scrutiny') || msg.includes('escrutinio')) {
-      const asmMatch = message.match(/(?:asamblea|assembly)\s*[:#]?\s*(\d+)/i);
-      const qMatch = message.match(/(?:question|pregunta|q)\s*[:#]?\s*(\d+)/i);
-      if (!asmMatch) return 'Please specify an assembly ID. Example: "results for assembly 123 question 1"';
-      const asmId = Number(asmMatch[1]);
-      try { getToken(); } catch { await adminLogin('admin'); }
-      setAssemblyContext(asmId);
-      if (qMatch) {
-        const qId = Number(qMatch[1]);
-        const results = await fetchVotingResults(asmId, qId);
-        if (!results.length) return `No voting results found for assembly ${asmId} question ${qId}.`;
-        const lines = results.map((r: Record<string, unknown>) =>
-          `• **${r.texto}**: ${r.conteo} votes, nominal: ${r.nominal}, coef: ${r.coeficiente}`
-        );
-        return `Voting results for assembly **${asmId}** question **${qId}**:\n\n${lines.join('\n')}`;
+      // Execute each tool call and add results
+      for (const toolCall of choice.message.tool_calls) {
+        const args = JSON.parse(toolCall.function.arguments || '{}');
+        logger.info(`Executing tool: ${toolCall.function.name}`, { args });
+        const result = await executeTool(toolCall.function.name, args);
+        messages.push({
+          role: 'tool' as const,
+          tool_call_id: toolCall.id,
+          content: result || '{"result": "no data returned"}',
+        });
       }
-      return 'Please also specify a question ID. Example: "results for assembly 123 question 1"';
+
+      // Follow-up LLM call with tool results
+      const followUp = await client.chat.completions.create({
+        model,
+        messages,
+        tools: TECNOREUNIONES_TOOLS,
+        temperature: 0.3,
+        max_tokens: 4096,
+      });
+
+      choice = followUp.choices[0];
+      if (!choice) return 'No response from LLM after tool execution.';
     }
 
-    // ── Raw service call ──
-    if (msg.includes('service') || msg.includes('servicio')) {
-      const svcMatch = message.match(/service\s*(\d+)/i);
-      if (!svcMatch) return 'Please specify a service number. Example: "call service 9"';
-      const svcId = Number(svcMatch[1]);
-      const params: Record<string, string | number> = {};
-      try { params.token = getToken(); } catch { /* no token yet */ }
-      const asmMatch = message.match(/(?:asamblea|assembly|id)\s*[:#]?\s*(\d+)/i);
-      if (asmMatch) params.idAsamblea = Number(asmMatch[1]);
-      const qMatch = message.match(/(?:question|pregunta)\s*[:#]?\s*(\d+)/i);
-      if (qMatch) params.idPregunta = Number(qMatch[1]);
-      const data = await callService(svcId, params);
-      const json = JSON.stringify(data, null, 2);
-      return `Service **${svcId}** response:\n\n\`\`\`json\n${json.substring(0, 2000)}\n\`\`\`${json.length > 2000 ? '\n\n…truncated' : ''}`;
-    }
-
-    // ── Help / fallback ──
-    return `I can query Tecnoreuniones for you. Try:\n\n` +
-      `• **"active assemblies"** — list assemblies in progress\n` +
-      `• **"login"** — authenticate with the API\n` +
-      `• **"assembly info id 123"** — get metadata for an assembly\n` +
-      `• **"attendance for assembly 123"** — attendee list\n` +
-      `• **"quorum for assembly 123"** — quorum & status\n` +
-      `• **"questions for assembly 123"** — list voting questions\n` +
-      `• **"results for assembly 123 question 1"** — voting results\n` +
-      `• **"call service 9"** — raw service call`;
-
+    return choice.message.content || 'I processed your request but have no text response.';
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    logger.error('Robinson chat error', { error: errMsg });
+    logger.error(`Agent ${agentId} chat error`, { error: errMsg });
     return `❌ Error: ${errMsg}`;
   }
-}
-
-// ── Gloria: draft/review queries from local DB ──
-
-async function handleGloriaChat(message: string): Promise<string> {
-  const msg = message.toLowerCase();
-  try {
-    if (msg.includes('draft') || msg.includes('pending') || msg.includes('review')) {
-      const drafts = await getDraftList();
-      if (!drafts.length) return 'No drafts pending review at the moment.';
-      const lines = drafts.map((d) => `• **${d.buildingName}** (${d.jobId}) — ${d.sectionCount} sections, ${d.flagCount} flags`);
-      return `${drafts.length} draft(s) pending review:\n\n${lines.join('\n')}`;
-    }
-    return `I handle review and approval. Try:\n\n• **"pending drafts"** — list drafts awaiting review\n• **"draft status"** — check review progress`;
-  } catch (err) {
-    return `❌ Error: ${err instanceof Error ? err.message : String(err)}`;
-  }
-}
-
-// ── Supervisor: pipeline overview from local DB ──
-
-async function handleSupervisorChat(message: string): Promise<string> {
-  const msg = message.toLowerCase();
-  try {
-    if (msg.includes('pipeline') || msg.includes('status') || msg.includes('overview') || msg.includes('jobs')) {
-      const overview = await getPipelineOverview();
-      return `Pipeline overview:\n\n` +
-        `• **Active**: ${overview.activeJobs}\n` +
-        `• **Queued**: ${overview.queuedJobs}\n` +
-        `• **Completed**: ${overview.completedJobs}\n` +
-        `• **Failed**: ${overview.failedJobs}\n\n` +
-        (overview.recentJobs.length
-          ? `Recent jobs:\n${overview.recentJobs.slice(0, 5).map((j) => `• ${j.buildingName} — ${j.status}`).join('\n')}`
-          : 'No recent jobs.');
-    }
-    return `I orchestrate the pipeline. Try:\n\n• **"pipeline status"** — overview of all jobs\n• **"recent jobs"** — last processed events`;
-  } catch (err) {
-    return `❌ Error: ${err instanceof Error ? err.message : String(err)}`;
-  }
-}
-
-// ── Generic handler for agents without live backends yet ──
-
-function handleGenericChat(name: string, role: string, message: string): Promise<string> {
-  return Promise.resolve(
-    `Hi! I'm **${name}** (${role}). My chat backend isn't connected yet, but I'll be able to answer questions about my work soon.\n\n` +
-    `You asked: "${message.substring(0, 200)}"\n\n` +
-    `For now, you can see my status and stats in the detail panel below.`
-  );
 }

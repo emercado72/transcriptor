@@ -19,6 +19,8 @@ export function getEnvConfig(): EnvConfig {
     redisPort: parseInt(process.env.REDIS_PORT || '6379', 10),
     redisPassword: process.env.REDIS_PASSWORD || '',
     openaiApiKey: process.env.OPENAI_API_KEY || '',
+    groqApiKey: process.env.GROQ_API_KEY || '',
+    groqModel: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
     elevenLabsApiKey: process.env.ELEVENLABS_API_KEY || '',
     googleClientId: process.env.GOOGLE_CLIENT_ID || '',
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || '',

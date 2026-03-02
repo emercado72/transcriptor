@@ -3,4 +3,22 @@ packages:
 
 allowBuild: esbuild msgpackr-extract
 
-onlyBuiltDependencies: esbuild
+onlyBuiltDependencies:
+  - ' '
+  - '-'
+  - a
+  - b
+  - c
+  - d
+  - e
+  - g
+  - i
+  - k
+  - l
+  - m
+  - p
+  - r
+  - s
+  - t
+  - u
+  - x

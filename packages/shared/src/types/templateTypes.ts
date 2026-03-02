@@ -33,6 +33,8 @@ export interface EnvConfig {
   redisPort: number;
   redisPassword: string;
   openaiApiKey: string;
+  groqApiKey: string;
+  groqModel: string;
   elevenLabsApiKey: string;
   googleClientId: string;
   googleClientSecret: string;
