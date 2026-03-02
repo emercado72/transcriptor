@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@transcriptor/shared": "workspace:*",
-    "axios": "^1.7.0"
+    "axios": "^1.7.0",
+    "mysql2": "^3.18.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

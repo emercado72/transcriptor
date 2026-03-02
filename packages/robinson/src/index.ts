@@ -20,3 +20,18 @@ export {
   mapQuorum,
   mapQuorumSnapshot,
 } from './adapters/tecnoreunionesAdapter.js';
+
+export {
+  queryTecnoreuniones,
+  dbFetchQuestions,
+  dbFetchAssemblyStatus,
+  dbFetchAttendanceList,
+  dbFetchVotingResults,
+  dbFetchQuorumSnapshot,
+  dbFetchAssemblyMetadata,
+  dbFetchVotingScrutiny,
+  dbFetchLastAnsweredQuestion,
+  dbListTables,
+  dbDescribeTable,
+  closePool,
+} from './adapters/tecnoreunionesDb.js';

@@ -28,6 +28,10 @@ export function getEnvConfig(): EnvConfig {
     googleDriveRootFolderId: process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || '',
     tecnoreunionesApiUrl: process.env.TECNOREUNIONES_API_URL || '',
     tecnoreunionesApiKey: process.env.TECNOREUNIONES_API_KEY || '',
+    tecnoreunionesDbHost: process.env.TECNOREUNIONES_DB_HOST || 'n1.tecnoreuniones.com',
+    tecnoreunionesDbUser: process.env.TECNOREUNIONES_DB_USER || 'tecno',
+    tecnoreunionesDbPass: process.env.TECNOREUNIONES_DB_PASS || 'reuniones',
+    tecnoreunionesDbName: process.env.TECNOREUNIONES_DB_NAME || 'Tecnoreuniones',
     logLevel: process.env.LOG_LEVEL || 'debug',
     gloriaPort: parseInt(process.env.GLORIA_PORT || '3001', 10),
   };

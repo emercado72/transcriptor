@@ -408,22 +408,22 @@ const TECNOREUNIONES_TOOLS: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'admin_login',
-      description: 'Authenticate with the Tecnoreuniones API. Returns a session token and the default assembly ID. Must be called before most other operations.',
+      name: 'fetch_assembly_metadata',
+      description: 'Get full metadata for a specific assembly (asamblea), including client name, date, location, type, and configuration.',
       parameters: {
         type: 'object',
         properties: {
-          usuario: { type: 'string', description: 'Admin username. Defaults to "admin" if not specified.' },
+          idAsamblea: { type: 'number', description: 'The assembly ID number.' },
         },
-        required: [],
+        required: ['idAsamblea'],
       },
     },
   },
   {
     type: 'function',
     function: {
-      name: 'fetch_assembly_metadata',
-      description: 'Get full metadata for a specific assembly (asamblea), including client name, date, location, type (ordinaria/extraordinaria), and configuration.',
+      name: 'fetch_assembly_status',
+      description: 'Get current assembly status including quorum percentages, attendee counts, state (EN CURSO/REGISTRO/TERMINADA), and operational data.',
       parameters: {
         type: 'object',
         properties: {
@@ -437,7 +437,7 @@ const TECNOREUNIONES_TOOLS: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'fetch_attendance_list',
-      description: 'Get the attendance/delegate list for an assembly. Returns all property owners, their units, representation type, check-in times, and coefficients.',
+      description: 'Get the attendance/delegate list for an assembly. Returns all property owners, their units, representation type (P=present, D=delegate, C=consolidated), check-in times, and coefficients.',
       parameters: {
         type: 'object',
         properties: {
@@ -451,7 +451,7 @@ const TECNOREUNIONES_TOOLS: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'fetch_question_list',
-      description: 'List all voting questions (preguntas) for an assembly, including their text, number of options, and whether they are active.',
+      description: 'List all voting questions (preguntas) for an assembly, including their text, number of options, whether active, and the option texts. Uses direct database query.',
       parameters: {
         type: 'object',
         properties: {
@@ -471,6 +471,7 @@ const TECNOREUNIONES_TOOLS: ChatCompletionTool[] = [
         properties: {
           idAsamblea: { type: 'number', description: 'The assembly ID number.' },
           idPregunta: { type: 'number', description: 'The question ID number.' },
+          opciones: { type: 'number', description: 'Number of selectable options. 1 = single choice (default), >1 = multiple choice.' },
         },
         required: ['idAsamblea', 'idPregunta'],
       },
@@ -494,20 +495,6 @@ const TECNOREUNIONES_TOOLS: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'fetch_assembly_status',
-      description: 'Get current assembly status including quorum percentages, attendee counts, state (open/closed), and operational data.',
-      parameters: {
-        type: 'object',
-        properties: {
-          idAsamblea: { type: 'number', description: 'The assembly ID number.' },
-        },
-        required: ['idAsamblea'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
       name: 'fetch_quorum_snapshot',
       description: 'Get a quorum snapshot for a specific closed question, showing quorum percentage and attendee count at the time the question was closed.',
       parameters: {
@@ -523,41 +510,90 @@ const TECNOREUNIONES_TOOLS: ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'fetch_admin_info',
-      description: 'Get information about the currently authenticated administrator.',
+      name: 'fetch_last_answered_question',
+      description: 'Get the last question that was answered/voted on in an assembly. Returns the question details.',
+      parameters: {
+        type: 'object',
+        properties: {
+          idAsamblea: { type: 'number', description: 'The assembly ID number.' },
+        },
+        required: ['idAsamblea'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'run_sql_query',
+      description: 'Run a read-only SQL SELECT query directly on the Tecnoreuniones MySQL database. Use this for custom queries not covered by other tools. Key tables: asambleas, residentes, preguntas, preguntasOpciones, respuestas, respuestasmultiples, asistentes, delegados, sesiones, poderes, quorumRespuestas. Key views: listadelegados, escrutiniovotacion, estadoasamblea, representados, cuestionario.',
+      parameters: {
+        type: 'object',
+        properties: {
+          sql: { type: 'string', description: 'The SQL SELECT query to execute. Only SELECT, SHOW, and DESCRIBE are allowed.' },
+          params: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Parameterized values for ? placeholders in the query.',
+          },
+        },
+        required: ['sql'],
+      },
+    },
+  },
+];
+
+// ── Yulieth-specific Tool Definitions ──
+
+const YULIETH_OWN_TOOLS: ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'check_queue_status',
+      description: 'Check the current status of the BullMQ job queue: how many jobs are pending, processing, completed, and failed.',
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
   {
     type: 'function',
     function: {
-      name: 'call_raw_service',
-      description: 'Call any Tecnoreuniones service by its numeric ID with arbitrary parameters. Use this for services not covered by other tools.',
+      name: 'check_drive_folders',
+      description: 'Scan the configured Google Drive root folder for event folders and list audio/voting files detected in each.',
       parameters: {
         type: 'object',
         properties: {
-          serviceId: { type: 'number', description: 'The Tecnoreuniones service number.' },
-          params: {
-            type: 'object',
-            description: 'Key-value parameters to send to the service.',
-            additionalProperties: { type: 'string' },
-          },
+          rootFolderId: { type: 'string', description: 'The Google Drive folder ID to scan. If omitted, uses the configured default.' },
         },
-        required: ['serviceId'],
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_pipeline_jobs',
+      description: 'Query the local PostgreSQL database for pipeline jobs. Returns recent jobs with their current stage, event info, and timestamps.',
+      parameters: {
+        type: 'object',
+        properties: {
+          status: { type: 'string', description: 'Filter by status (detected, queued, preprocessing, transcribing, sectioning, redacting, assembling, reviewing, completed, failed). If omitted, returns all.' },
+          limit: { type: 'number', description: 'Max number of jobs to return. Default 20.' },
+        },
+        required: [],
       },
     },
   },
 ];
 
-// ── Tool Executor ──
+// Yulieth gets her own tools PLUS all of Robinson's Tecnoreuniones tools
+const YULIETH_TOOLS: ChatCompletionTool[] = [
+  ...YULIETH_OWN_TOOLS,
+  ...TECNOREUNIONES_TOOLS,
+];
+
+// ── Tool Executor (Robinson) ──
 
 async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
   const adapter = await import('@transcriptor/robinson');
-
-  // Auto-login if needed for authenticated calls
-  const ensureAuth = async () => {
-    try { adapter.getToken(); } catch { await adapter.adminLogin('admin'); }
-  };
 
   try {
     switch (name) {
@@ -565,87 +601,131 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         const data = await adapter.fetchActiveAssemblies();
         return JSON.stringify(data, null, 2);
       }
-      case 'admin_login': {
-        const usuario = (args.usuario as string) || 'admin';
-        const result = await adapter.adminLogin(usuario);
-        return JSON.stringify(result);
-      }
       case 'fetch_assembly_metadata': {
-        await ensureAuth();
         const id = args.idAsamblea as number;
-        adapter.setAssemblyContext(id);
-        const data = await adapter.fetchAssemblyMetadata(id);
-        return JSON.stringify(data ?? { info: 'no metadata returned' }, null, 2);
+        const data = await adapter.dbFetchAssemblyMetadata(id);
+        return JSON.stringify(data ?? { info: 'No metadata found for assembly ' + id }, null, 2);
+      }
+      case 'fetch_assembly_status': {
+        const id = args.idAsamblea as number;
+        const data = await adapter.dbFetchAssemblyStatus(id);
+        return JSON.stringify(data ?? { info: 'No status found for assembly ' + id }, null, 2);
       }
       case 'fetch_attendance_list': {
-        await ensureAuth();
         const id = args.idAsamblea as number;
-        adapter.setAssemblyContext(id);
-        const raw = await adapter.fetchAttendanceList(id);
-        const mapped = adapter.mapAttendance(raw);
+        const raw = await adapter.dbFetchAttendanceList(id);
+        const present = raw.filter(r => r.fhultimoingreso != null);
         return JSON.stringify({
-          total: mapped.length,
-          present: mapped.filter(r => r.status !== 'absent').length,
-          absent: mapped.filter(r => r.status === 'absent').length,
-          records: mapped.slice(0, 50), // Limit to avoid token overflow
+          total: raw.length,
+          present: present.length,
+          absent: raw.length - present.length,
+          records: raw.slice(0, 50), // Limit to avoid token overflow
         }, null, 2);
       }
       case 'fetch_question_list': {
-        await ensureAuth();
         const id = args.idAsamblea as number;
-        adapter.setAssemblyContext(id);
-        const data = await adapter.fetchQuestionList(id);
+        const data = await adapter.dbFetchQuestions(id);
         return JSON.stringify(data, null, 2);
       }
       case 'fetch_voting_results': {
-        await ensureAuth();
         const asmId = args.idAsamblea as number;
         const qId = args.idPregunta as number;
-        adapter.setAssemblyContext(asmId);
-        const data = await adapter.fetchVotingResults(asmId, qId);
+        const opts = (args.opciones as number) || 1;
+        const data = await adapter.dbFetchVotingResults(asmId, qId, opts);
         return JSON.stringify(data, null, 2);
       }
       case 'fetch_voting_scrutiny': {
-        await ensureAuth();
         const asmId = args.idAsamblea as number;
         const qId = args.idPregunta as number;
-        adapter.setAssemblyContext(asmId);
-        const data = await adapter.fetchVotingScrutiny(asmId, qId);
-        return JSON.stringify(data, null, 2);
-      }
-      case 'fetch_assembly_status': {
-        await ensureAuth();
-        const id = args.idAsamblea as number;
-        adapter.setAssemblyContext(id);
-        const data = await adapter.fetchAssemblyStatus(id);
-        return JSON.stringify(data ?? { info: 'no status returned' }, null, 2);
-      }
-      case 'fetch_quorum_snapshot': {
-        await ensureAuth();
-        const asmId = args.idAsamblea as number;
-        const qId = args.idPregunta as number;
-        const data = await adapter.fetchQuorumSnapshot(asmId, qId);
-        return JSON.stringify(data ?? { info: 'no quorum snapshot available' }, null, 2);
-      }
-      case 'fetch_admin_info': {
-        await ensureAuth();
-        const data = await adapter.fetchAdminInfo();
-        return JSON.stringify(data ?? { info: 'no admin info returned' }, null, 2);
-      }
-      case 'call_raw_service': {
-        const svcId = args.serviceId as number;
-        const params = (args.params || {}) as Record<string, string | number>;
-        try { params['token'] = adapter.getToken(); } catch { /* ok */ }
-        const data = await adapter.callService(svcId, params);
+        const data = await adapter.dbFetchVotingScrutiny(asmId, qId);
         const json = JSON.stringify(data, null, 2);
         return json.length > 4000 ? json.substring(0, 4000) + '\n...truncated' : json;
+      }
+      case 'fetch_quorum_snapshot': {
+        const asmId = args.idAsamblea as number;
+        const qId = args.idPregunta as number;
+        const data = await adapter.dbFetchQuorumSnapshot(asmId, qId);
+        return JSON.stringify(data ?? { info: 'No quorum snapshot for this question' }, null, 2);
+      }
+      case 'fetch_last_answered_question': {
+        const id = args.idAsamblea as number;
+        const data = await adapter.dbFetchLastAnsweredQuestion(id);
+        return JSON.stringify(data ?? { info: 'No answered questions found for assembly ' + id }, null, 2);
+      }
+      case 'run_sql_query': {
+        const sql = args.sql as string;
+        const params = ((args.params || []) as string[]).map(p => isNaN(Number(p)) ? p : Number(p));
+        const data = await adapter.queryTecnoreuniones(sql, params);
+        const json = JSON.stringify(data, null, 2);
+        return json.length > 4000 ? json.substring(0, 4000) + '\n...truncated (' + data.length + ' total rows)' : json;
       }
       default:
         return JSON.stringify({ error: `Unknown tool: ${name}` });
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return JSON.stringify({ error: msg });
+    return JSON.stringify({ error: msg, note: 'This tool call failed. Do NOT retry it — report the error to the user and continue with other data you have.' });
+  }
+}
+
+// ── Tool Executor (Yulieth) ──
+
+async function executeYuliethTool(name: string, args: Record<string, unknown>): Promise<string> {
+  // Yulieth's own tools
+  switch (name) {
+    case 'check_queue_status': {
+      try {
+        const yulieth = await import('@transcriptor/yulieth');
+        const stats = await yulieth.getQueueStatus();
+        return JSON.stringify(stats, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Queue status unavailable: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    case 'check_drive_folders': {
+      try {
+        const yulieth = await import('@transcriptor/yulieth');
+        const folderId = (args.rootFolderId as string) || 'default';
+        const folders = await yulieth.checkForNewEvents(folderId);
+        return JSON.stringify(folders, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Drive scan unavailable: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    case 'get_pipeline_jobs': {
+      try {
+        const db = getDb();
+        const status = args.status as string | undefined;
+        const limit = (args.limit as number) || 20;
+        let result;
+        if (status) {
+          result = await db.execute(sql`
+            SELECT pj.job_id, pj.event_id, pj.status, pj.created_at, pj.updated_at,
+                   e.building_name
+            FROM pipeline_jobs pj
+            LEFT JOIN events e ON pj.event_id = e.event_id
+            WHERE pj.status = ${status}
+            ORDER BY pj.updated_at DESC
+            LIMIT ${limit}
+          `);
+        } else {
+          result = await db.execute(sql`
+            SELECT pj.job_id, pj.event_id, pj.status, pj.created_at, pj.updated_at,
+                   e.building_name
+            FROM pipeline_jobs pj
+            LEFT JOIN events e ON pj.event_id = e.event_id
+            ORDER BY pj.updated_at DESC
+            LIMIT ${limit}
+          `);
+        }
+        return JSON.stringify(result.rows, null, 2);
+      } catch (err) {
+        return JSON.stringify({ error: `Pipeline query failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    default:
+      // Delegate all Robinson/Tecnoreuniones tools to Robinson's executor
+      return executeTool(name, args);
   }
 }
 
@@ -654,21 +734,56 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
 const AGENT_SYSTEM_PROMPTS: Record<string, string> = {
   robinson: `You are **Robinson**, the Data Extraction Agent in the Transcriptor multi-agent system for Colombian property assembly (propiedad horizontal) minutes.
 
-Your role: You connect to the **Tecnoreuniones** platform API to extract real-time assembly data — attendance lists, voting results, quorum snapshots, question lists, and assembly metadata.
+Your role: You connect to the **Tecnoreuniones** platform to extract real-time assembly data. You have direct read-only access to the Tecnoreuniones MySQL database and can query any table or view.
 
-You have access to tools that query the Tecnoreuniones API. Use them to answer user questions. When you need data:
-1. You do NOT need to call admin_login — the system authenticates automatically.
-2. Call the appropriate tool(s) with the correct assembly ID.
-3. When you need multiple pieces of data, call ALL the tools you need in a SINGLE response (parallel tool calls) — do NOT call them one at a time.
-4. Present the results clearly in Markdown with bullet points, bold labels, and tables where appropriate.
+## Database Schema
 
-Important:
-- Assembly IDs are numeric (e.g., 2, 26009).
-- Always present data in a human-friendly format, not raw JSON.
-- If a tool returns an error, skip that data and present what you have.
-- You can understand Spanish and English. The data is in Spanish.
-- Summarize large datasets instead of dumping everything.
-- If the user asks something you can't answer with your tools, say so honestly.`,
+### Key Tables
+| Table | Description |
+|-------|-------------|
+| asambleas | Assembly/event master data (idAsamblea, cliente, estado, permiteRegistro, permiteVotoMora, etc.) |
+| residentes | Unit owners — idAsamblea, idtorre, idunidad, nombrePropietario1, nombrePropietario2, coeficiente, nominal, mora, clave |
+| preguntas | Voting questions — idAsamblea, idPregunta, texto, tipo, activa, opciones, fhPregunta, fhcierre |
+| preguntasOpciones | Question option texts — idAsamblea, idPregunta, idOpcion, texto |
+| respuestas | Single-choice votes — idAsamblea, idPregunta, idTorre, idUnidad, respuesta |
+| respuestasmultiples | Multi-choice votes — same structure as respuestas |
+| asistentes | Registered attendees — idAsamblea, idUsuario, tipoRepresentacion (P=present, D=delegate, C=consolidated), fhultimoingreso, coeficiente, ultimarespuesta |
+| delegados | Delegation relationships — idAsamblea, idDelegante, idDelegado |
+| sesiones | Active sessions — token, idUsuario, idAsamblea, ip |
+| poderes | Power of representation between units |
+| quorumRespuestas | Quorum snapshots at question close — idAsamblea, idPregunta, quorum, asistentes, fhoperacion, listaAsistentes |
+| administradores | Assembly administrators |
+
+### Key Views
+| View | Description |
+|------|-------------|
+| listadelegados | Attendance list with delegation info (used by service 3) |
+| escrutiniovotacion | Voting scrutiny per question (used by service 1002) |
+| estadoasamblea | Assembly status dashboard — quorum, attendee counts, state |
+| representados | Represented units per user |
+| cuestionario | Active questionnaire |
+
+## Available Tools
+- **fetch_active_assemblies**: List active assemblies (no params needed)
+- **fetch_assembly_metadata**: Get assembly config from \`asambleas\` table
+- **fetch_assembly_status**: Get quorum/status from \`estadoasamblea\` view
+- **fetch_attendance_list**: Get attendance from \`listadelegados\` view
+- **fetch_question_list**: Get questions + options from \`preguntas\` + \`preguntasOpciones\`
+- **fetch_voting_results**: Get aggregated vote counts with coefficients
+- **fetch_voting_scrutiny**: Get per-unit voting detail from \`escrutiniovotacion\`
+- **fetch_quorum_snapshot**: Get quorum at question close time
+- **fetch_last_answered_question**: Get the last voted question in an assembly
+- **run_sql_query**: Run any SELECT query directly on the database
+
+## CRITICAL RULES
+1. **ALWAYS call ALL the tools you need in a SINGLE response using parallel tool calls.** NEVER call them one by one.
+2. **NEVER retry a tool that returned an error.** Report it and continue with other data.
+3. After receiving tool results, write your final answer immediately — do NOT make more tool calls.
+4. Present results in Markdown with tables, bold labels, and bullet points.
+5. Assembly IDs are numeric (e.g., 2, 26009, 26036).
+6. Data is in Spanish. You can respond in Spanish or English depending on the user's language.
+7. Summarize large datasets instead of dumping everything.
+8. For complex queries not covered by the predefined tools, use **run_sql_query** with proper parameterized queries.`,
 
   gloria: `You are **Gloria**, the Review & QA Agent in the Transcriptor system.
 
@@ -694,17 +809,61 @@ You can answer questions about:
 
 Be concise and status-focused in your responses.`,
 
-  yulieth: `You are **Yulieth**, the Drive Watcher & Job Queue Agent in the Transcriptor system.
+  yulieth: `You are **Yulieth**, the Drive Watcher & Job Queue Agent in the Transcriptor multi-agent system for Colombian property assembly (propiedad horizontal) minutes.
 
-Your role: You monitor Google Drive folders for new assembly audio recordings, detect new files, create pipeline jobs, and manage the job queue.
+Your role: You are the **intake point** of the entire pipeline. You monitor Google Drive folders for new assembly audio recordings, validate incoming files, create pipeline jobs, and manage the BullMQ job queue. You are the first agent that kicks off the transcription pipeline.
 
-You can answer questions about:
-- How file detection works
-- Job queue management
-- Google Drive integration
-- File formats and naming conventions
+## Your Own Capabilities
+- **check_queue_status**: See how many jobs are pending, processing, completed, or failed in the BullMQ queue.
+- **check_drive_folders**: Scan a Google Drive folder for event subfolders with audio/voting files.
+- **get_pipeline_jobs**: Query the local PostgreSQL database for pipeline job history (filter by status, see recent activity).
 
-Be helpful and explain your workflow clearly.`,
+## Robinson Delegation — Tecnoreuniones Data Access
+You have full access to **Robinson's** data tools. Robinson is the Data Extraction Agent who connects to the Tecnoreuniones MySQL database. Whenever you need information about assemblies, attendance, voting questions, quorum, results, or any assembly-related data from the Tecnoreuniones platform, use Robinson's tools directly:
+
+- **fetch_active_assemblies**: List all currently active assemblies.
+- **fetch_assembly_metadata**: Get full metadata for a specific assembly (client name, date, location, type).
+- **fetch_assembly_status**: Get quorum, attendee counts, and assembly state.
+- **fetch_attendance_list**: Get the attendance/delegate list with check-in times and coefficients.
+- **fetch_question_list**: List all voting questions and their options for an assembly.
+- **fetch_voting_results**: Get aggregated voting results for a specific question.
+- **fetch_voting_scrutiny**: Get per-unit voting detail.
+- **fetch_quorum_snapshot**: Get quorum at question close time.
+- **fetch_last_answered_question**: Get the last voted question in an assembly.
+- **run_sql_query**: Run any read-only SELECT query on the Tecnoreuniones MySQL database.
+
+### Tecnoreuniones Database Schema (for run_sql_query)
+| Table | Description |
+|-------|-------------|
+| asambleas | Assembly master data (idAsamblea, cliente, estado, permiteRegistro, etc.) |
+| residentes | Unit owners — idAsamblea, idtorre, idunidad, nombrePropietario1, coeficiente, mora |
+| preguntas | Voting questions — idAsamblea, idPregunta, texto, tipo, activa, opciones |
+| preguntasOpciones | Question option texts — idAsamblea, idPregunta, idRespuesta, texto |
+| respuestas | Single-choice votes |
+| respuestasmultiples | Multi-choice votes |
+| asistentes | Registered attendees — tipoRepresentacion (P/D/C), fhultimoingreso, coeficiente |
+| delegados | Delegation relationships |
+| sesiones | Active sessions |
+| poderes | Power of representation between units |
+| quorumRespuestas | Quorum snapshots at question close |
+
+### Key Views
+| View | Description |
+|------|-------------|
+| listadelegados | Attendance list with delegation info |
+| escrutiniovotacion | Per-unit voting scrutiny |
+| estadoasamblea | Assembly status dashboard |
+| representados | Represented units per user |
+| cuestionario | Active questionnaire |
+
+## CRITICAL RULES
+1. **Use ALL the tools you need in a SINGLE response using parallel tool calls.** NEVER call them one by one.
+2. **NEVER retry a tool that returned an error.** Report it and continue with other data.
+3. After receiving tool results, write your final answer immediately — do NOT make more tool calls.
+4. Present results in Markdown with tables, bold labels, and bullet points.
+5. Data is in Spanish. You can respond in Spanish or English depending on the user's language.
+6. For questions about Tecnoreuniones data, use Robinson's tools. For questions about the pipeline/queue, use your own tools.
+7. You are **not** Robinson — you are Yulieth. But you can access Robinson's data when needed.`,
 
   chucho: `You are **Chucho**, the Audio Preprocessor Agent in the Transcriptor system.
 
@@ -765,8 +924,11 @@ async function handleAgentChat(agentId: string, message: string): Promise<string
     return `Unknown agent: ${agentId}`;
   }
 
-  // Robinson gets Tecnoreuniones tools; other agents get pure conversation
+  // Robinson and Yulieth get tools; other agents get pure conversation
   const isRobinson = agentId === 'robinson';
+  const isYulieth = agentId === 'yulieth';
+  const agentTools = isRobinson ? TECNOREUNIONES_TOOLS : isYulieth ? YULIETH_TOOLS : undefined;
+  const agentToolExecutor = isYulieth ? executeYuliethTool : executeTool;
 
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
@@ -781,7 +943,7 @@ async function handleAgentChat(agentId: string, message: string): Promise<string
     const response = await client.chat.completions.create({
       model,
       messages,
-      tools: isRobinson ? TECNOREUNIONES_TOOLS : undefined,
+      tools: agentTools,
       temperature: 0.3,
       max_tokens: 4096,
     });
@@ -789,43 +951,106 @@ async function handleAgentChat(agentId: string, message: string): Promise<string
     let choice = response.choices[0];
     if (!choice) return 'No response from LLM.';
 
-    // Tool-calling loop (Robinson only, max 10 iterations)
+    // Tool-calling loop (Robinson & Yulieth, max 10 iterations)
     let iterations = 0;
     while (choice.finish_reason === 'tool_calls' && choice.message.tool_calls && iterations < 10) {
       iterations++;
-      logger.info(`Robinson tool call iteration ${iterations}`, {
+      logger.info(`${agentId} tool call iteration ${iterations}`, {
         tools: choice.message.tool_calls.map(tc => tc.function.name),
       });
 
-      // Add assistant message with tool calls
-      messages.push(choice.message);
+      // Sanitize assistant message before adding to history.
+      // Groq returns content:null on tool_calls, which can cause 400 errors
+      // on the follow-up request. We must ensure content is either a string or omitted.
+      const assistantMsg: ChatCompletionMessageParam = {
+        role: 'assistant' as const,
+        tool_calls: choice.message.tool_calls.map(tc => ({
+          id: tc.id,
+          type: 'function' as const,
+          function: {
+            name: tc.function.name,
+            arguments: tc.function.arguments,
+          },
+        })),
+      };
+      // Only include content if it's a non-empty string
+      if (typeof choice.message.content === 'string' && choice.message.content.length > 0) {
+        (assistantMsg as unknown as Record<string, unknown>).content = choice.message.content;
+      }
+      messages.push(assistantMsg);
 
       // Execute each tool call and add results
       for (const toolCall of choice.message.tool_calls) {
-        const args = JSON.parse(toolCall.function.arguments || '{}');
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(toolCall.function.arguments || '{}');
+        } catch (parseErr) {
+          logger.error(`Failed to parse tool arguments for ${toolCall.function.name}`, {
+            raw: toolCall.function.arguments,
+            error: String(parseErr),
+          });
+        }
         logger.info(`Executing tool: ${toolCall.function.name}`, { args });
-        const result = await executeTool(toolCall.function.name, args);
+        const result = await agentToolExecutor(toolCall.function.name, args);
+        // Groq requires content to be a non-empty string
+        const toolContent = (typeof result === 'string' && result.length > 0)
+          ? result
+          : '{"result": "no data returned"}';
         messages.push({
           role: 'tool' as const,
           tool_call_id: toolCall.id,
-          content: result || '{"result": "no data returned"}',
+          content: toolContent,
         });
       }
 
       // Follow-up LLM call with tool results
-      const followUp = await client.chat.completions.create({
-        model,
-        messages,
-        tools: TECNOREUNIONES_TOOLS,
-        temperature: 0.3,
-        max_tokens: 4096,
-      });
+      try {
+        const followUp = await client.chat.completions.create({
+          model,
+          messages,
+          tools: agentTools,
+          temperature: 0.3,
+          max_tokens: 4096,
+        });
 
-      choice = followUp.choices[0];
-      if (!choice) return 'No response from LLM after tool execution.';
+        choice = followUp.choices[0];
+        if (!choice) return 'No response from LLM after tool execution.';
+      } catch (followUpErr) {
+        const errDetail = followUpErr instanceof Error ? followUpErr.message : String(followUpErr);
+        logger.error('Groq follow-up call failed', {
+          error: errDetail,
+          messageCount: messages.length,
+          lastMessages: messages.slice(-3).map(m => ({ role: m.role, hasContent: 'content' in m && !!m.content })),
+        });
+        // If the follow-up fails, try to recover by summarizing tool results directly
+        const toolResults = messages
+          .filter(m => m.role === 'tool')
+          .map(m => ('content' in m ? m.content : ''))
+          .join('\n');
+        return `Obtuve datos de Tecnoreuniones pero hubo un error al procesarlos con el LLM. Aquí los datos crudos:\n\n${toolResults.substring(0, 3000)}`;
+      }
     }
 
-    return choice.message.content || 'I processed your request but have no text response.';
+    // If the loop ended because we hit max iterations (finish_reason is still 'tool_calls'),
+    // force a final call WITHOUT tools to get a text summary.
+    if (choice.finish_reason === 'tool_calls' || !choice.message.content) {
+      logger.info('Forcing final text-only LLM call after tool loop');
+      messages.push({
+        role: 'user' as const,
+        content: 'Please summarize all the data you have collected so far and present your answer. Do not make any more tool calls.',
+      });
+      const finalCall = await client.chat.completions.create({
+        model,
+        messages,
+        temperature: 0.3,
+        max_tokens: 4096,
+        // NO tools — force a text response
+      });
+      const finalChoice = finalCall.choices[0];
+      return finalChoice?.message.content || 'No pude obtener una respuesta del modelo.';
+    }
+
+    return choice.message.content;
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     logger.error(`Agent ${agentId} chat error`, { error: errMsg });

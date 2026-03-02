@@ -42,6 +42,10 @@ export interface EnvConfig {
   googleDriveRootFolderId: string;
   tecnoreunionesApiUrl: string;
   tecnoreunionesApiKey: string;
+  tecnoreunionesDbHost: string;
+  tecnoreunionesDbUser: string;
+  tecnoreunionesDbPass: string;
+  tecnoreunionesDbName: string;
   logLevel: string;
   gloriaPort: number;
 }
