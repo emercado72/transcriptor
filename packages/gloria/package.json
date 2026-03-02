@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@transcriptor/shared": "workspace:*",
+    "@transcriptor/robinson": "workspace:*",
     "@transcriptor/supervisor": "workspace:*",
     "express": "^4.21.0",
     "cors": "^2.8.5"

@@ -1,1 +1,22 @@
 export * from './robinsonService.js';
+export {
+  callService,
+  adminLogin,
+  getToken,
+  getAssemblyId,
+  setAssemblyContext,
+  fetchAssemblyMetadata,
+  fetchAttendanceList,
+  fetchQuestionList,
+  fetchVotingScrutiny,
+  fetchVotingResults,
+  fetchAssemblyStatus,
+  fetchQuorumSnapshot,
+  fetchAdminInfo,
+  fetchActiveAssemblies,
+  mapAttendance,
+  mapVotingResults,
+  mapVotingDetail,
+  mapQuorum,
+  mapQuorumSnapshot,
+} from './adapters/tecnoreunionesAdapter.js';

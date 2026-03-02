@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import AgentGraph from './components/AgentGraph.js';
 import DetailPanel from './components/DetailPanel.js';
 import Toolbar from './components/Toolbar.js';
+import ChatPanel from './components/ChatPanel.js';
 import {
   getDefaultNodes,
   getEdges,
@@ -77,6 +78,7 @@ export default function App() {
 
   const edges = getEdges();
   const [selectedNode, setSelectedNode] = useState<AgentId | null>(null);
+  const [chatAgent, setChatAgent] = useState<AgentId | null>(null);
 
   // ── Agent data ──
   const [statuses, setStatuses] = useState<Record<AgentId, AgentStatus>>(mockStatuses);
@@ -154,6 +156,13 @@ export default function App() {
   }, []);
 
   const selectedNodeData = selectedNode ? nodes.find((n) => n.id === selectedNode) ?? null : null;
+  const chatNodeData = chatAgent ? nodes.find((n) => n.id === chatAgent) ?? null : null;
+
+  // When a node is clicked, open the chat panel for that agent
+  const handleSelectNode = useCallback((id: AgentId | null) => {
+    setSelectedNode(id);
+    if (id) setChatAgent(id);
+  }, []);
 
   return (
     <div style={{
@@ -167,41 +176,54 @@ export default function App() {
     }}>
       <Toolbar overview={overview} onAutoArrange={handleAutoArrange} />
 
-      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-        <AgentGraph
-          nodes={nodes}
-          edges={edges}
-          statuses={statuses}
-          stats={stats}
-          selectedNode={selectedNode}
-          onSelectNode={setSelectedNode}
-          onMoveNode={handleMoveNode}
-        />
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+        {/* Main graph area */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+          <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+            <AgentGraph
+              nodes={nodes}
+              edges={edges}
+              statuses={statuses}
+              stats={stats}
+              selectedNode={selectedNode}
+              onSelectNode={handleSelectNode}
+              onMoveNode={handleMoveNode}
+            />
 
-        {/* Keyboard hint */}
-        <div style={{
-          position: 'absolute',
-          bottom: selectedNodeData ? '180px' : '16px',
-          right: '16px',
-          background: 'rgba(15,23,42,0.8)',
-          padding: '8px 12px',
-          borderRadius: '6px',
-          fontSize: '11px',
-          color: '#64748b',
-          transition: 'bottom 0.2s ease',
-        }}>
-          Scroll to zoom · Drag background to pan · Drag nodes to rearrange
+            {/* Keyboard hint */}
+            <div style={{
+              position: 'absolute',
+              bottom: selectedNodeData ? '180px' : '16px',
+              right: chatNodeData ? '16px' : '16px',
+              background: 'rgba(15,23,42,0.8)',
+              padding: '8px 12px',
+              borderRadius: '6px',
+              fontSize: '11px',
+              color: '#64748b',
+              transition: 'bottom 0.2s ease',
+            }}>
+              Click a node to chat · Scroll to zoom · Drag to pan
+            </div>
+          </div>
+
+          {selectedNodeData && (
+            <DetailPanel
+              node={selectedNodeData}
+              status={statuses[selectedNode!] ?? null}
+              stats={stats[selectedNode!] ?? null}
+              onClose={() => setSelectedNode(null)}
+            />
+          )}
         </div>
-      </div>
 
-      {selectedNodeData && (
-        <DetailPanel
-          node={selectedNodeData}
-          status={statuses[selectedNode!] ?? null}
-          stats={stats[selectedNode!] ?? null}
-          onClose={() => setSelectedNode(null)}
-        />
-      )}
+        {/* Chat side panel */}
+        {chatNodeData && (
+          <ChatPanel
+            node={chatNodeData}
+            onClose={() => setChatAgent(null)}
+          />
+        )}
+      </div>
     </div>
   );
 }
