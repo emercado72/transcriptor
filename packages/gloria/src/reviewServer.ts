@@ -738,6 +738,15 @@ export function startServer(port?: number): void {
       }
     });
 
+    app.get('/api/agents/fisher/heartbeats', async (_req, res) => {
+      try {
+        const f = await getFisher();
+        res.json(f.getAllHeartbeats());
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    });
+
     app.post('/api/agents/fisher/provision', async (_req, res) => {
       try {
         const f = await getFisher();

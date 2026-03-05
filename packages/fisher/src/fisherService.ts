@@ -5,6 +5,7 @@
 import { createLogger } from '@transcriptor/shared';
 import * as linode from './linodeClient.js';
 import * as backup from './jobBackup.js';
+import * as monitor from './workerMonitor.js';
 
 const logger = createLogger('fisher');
 
@@ -24,6 +25,7 @@ export interface FisherStatus {
   worker: WorkerInfo;
   config: Partial<linode.FisherConfig>;
   backups: backup.BackupResult[];
+  heartbeats: monitor.WorkerHeartbeat[];
 }
 
 let workerInfo: WorkerInfo = { instanceId: null, ip: null, label: null, state: 'idle', currentJobId: null, createdAt: null, error: null };
@@ -51,6 +53,7 @@ export function getStatus(): FisherStatus {
     worker: { ...workerInfo },
     config: fisherConfig ? { region: fisherConfig.region, instanceType: fisherConfig.instanceType, labelPrefix: fisherConfig.labelPrefix } : {},
     backups: [...backupHistory],
+    heartbeats: monitor.getAllHeartbeats(),
   };
 }
 
@@ -72,6 +75,7 @@ export async function provisionWorker(): Promise<string> {
     const ready = await linode.waitForGloria(workerInfo.ip!, 3001, 720_000, 20_000);
     if (!ready) throw new Error('Gloria did not come online within 12 minutes');
     workerInfo.state = 'processing';
+    monitor.startHeartbeat(instance.id, workerInfo.ip!, workerInfo.label!, 30_000);
     return workerInfo.ip!;
   } catch (err) {
     workerInfo.state = 'error';
@@ -118,6 +122,7 @@ export async function backupAndDestroy(): Promise<backup.BackupResult[]> {
 export async function destroyWorker(): Promise<void> {
   if (!fisherConfig || !workerInfo.instanceId) { workerInfo.state = 'idle'; return; }
   workerInfo.state = 'destroying';
+  monitor.stopHeartbeat(workerInfo.instanceId);
   try { await linode.deleteWorker(fisherConfig, workerInfo.instanceId); } catch (e) { logger.error('Destroy: ' + (e as Error).message); }
   workerInfo = { instanceId: null, ip: null, label: null, state: 'idle', currentJobId: null, createdAt: null, error: null };
 }
