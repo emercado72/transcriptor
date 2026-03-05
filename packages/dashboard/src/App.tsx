@@ -11,6 +11,7 @@ import GloriaQueuePanel from './components/GloriaQueuePanel.js';
 import KanbanBoard from './components/KanbanBoard.js';
 import ReviewPage from './components/ReviewPage.js';
 import ContextMenu from './components/ContextMenu.js';
+import PromptEditor from './components/PromptEditor.js';
 import type { ContextMenuAction } from './components/ContextMenu.js';
 import {
   getDefaultNodes,
@@ -24,7 +25,7 @@ import type { AgentId, AgentNode, AgentStatus, AgentStats, PipelineOverview } fr
 
 // ── Mock data for when the API isn't running yet ──
 function mockStatuses(): Record<AgentId, AgentStatus> {
-  const agents: AgentId[] = ['yulieth', 'robinson', 'chucho', 'jaime', 'lina', 'fannery', 'gloria', 'supervisor'];
+  const agents: AgentId[] = ['yulieth', 'robinson', 'chucho', 'jaime', 'lina', 'fannery', 'gloria', 'supervisor', 'fisher'];
   const result: Record<string, AgentStatus> = {};
   for (const id of agents) {
     result[id] = {
@@ -40,7 +41,7 @@ function mockStatuses(): Record<AgentId, AgentStatus> {
 }
 
 function mockStats(): Record<AgentId, AgentStats> {
-  const agents: AgentId[] = ['yulieth', 'robinson', 'chucho', 'jaime', 'lina', 'fannery', 'gloria', 'supervisor'];
+  const agents: AgentId[] = ['yulieth', 'robinson', 'chucho', 'jaime', 'lina', 'fannery', 'gloria', 'supervisor', 'fisher'];
   const result: Record<string, AgentStats> = {};
   for (const id of agents) {
     result[id] = {
@@ -89,8 +90,8 @@ export default function App() {
   const [selectedNode, setSelectedNode] = useState<AgentId | null>(null);
   const [chatAgent, setChatAgent] = useState<AgentId | null>(null);
 
-  // Side panel mode: 'chat' | 'config' | 'queue' | 'kanban'
-  type SidePanelMode = 'chat' | 'config' | 'queue' | 'kanban';
+  // Side panel mode: 'chat' | 'config' | 'queue' | 'kanban' | 'prompt'
+  type SidePanelMode = 'chat' | 'config' | 'queue' | 'kanban' | 'prompt';
   const [sidePanelMode, setSidePanelMode] = useState<SidePanelMode>('chat');
 
   // Context menu state
@@ -179,12 +180,16 @@ export default function App() {
   const selectedNodeData = selectedNode ? nodes.find((n) => n.id === selectedNode) ?? null : null;
   const chatNodeData = chatAgent ? nodes.find((n) => n.id === chatAgent) ?? null : null;
 
-  // When a node is clicked, open the chat panel for that agent
+  // When a node is clicked, open the queue panel for that agent
   const handleSelectNode = useCallback((id: AgentId | null) => {
     setSelectedNode(id);
     if (id) {
       setChatAgent(id);
-      setSidePanelMode('chat');
+      if (id === 'supervisor') {
+        setSidePanelMode('kanban');
+      } else {
+        setSidePanelMode('queue');
+      }
     }
   }, []);
 
@@ -214,6 +219,24 @@ export default function App() {
         setSidePanelMode('chat');
       },
     },
+    {
+      label: 'View Queue',
+      icon: '📊',
+      onClick: () => {
+        setChatAgent(contextMenu.agentId);
+        setSelectedNode(contextMenu.agentId);
+        setSidePanelMode(contextMenu.agentId === 'supervisor' ? 'kanban' : 'queue');
+      },
+    },
+    {
+      label: 'View/Edit Prompt',
+      icon: '📝',
+      onClick: () => {
+        setChatAgent(contextMenu.agentId);
+        setSelectedNode(contextMenu.agentId);
+        setSidePanelMode('prompt');
+      },
+    },
     ...(contextMenu.agentId === 'yulieth' ? [
       {
         label: 'Configure',
@@ -222,59 +245,6 @@ export default function App() {
           setChatAgent(contextMenu.agentId);
           setSelectedNode(contextMenu.agentId);
           setSidePanelMode('config');
-        },
-      },
-      {
-        label: 'View Queue',
-        icon: '📂',
-        onClick: () => {
-          setChatAgent(contextMenu.agentId);
-          setSelectedNode(contextMenu.agentId);
-          setSidePanelMode('queue');
-        },
-      },
-    ] : []),
-    ...(['chucho', 'jaime'].includes(contextMenu.agentId) ? [
-      {
-        label: 'View Queue',
-        icon: '📊',
-        onClick: () => {
-          setChatAgent(contextMenu.agentId);
-          setSelectedNode(contextMenu.agentId);
-          setSidePanelMode('queue');
-        },
-      },
-    ] : []),
-    ...(['lina', 'fannery'].includes(contextMenu.agentId) ? [
-      {
-        label: 'View Queue',
-        icon: contextMenu.agentId === 'lina' ? '✍️' : '📄',
-        onClick: () => {
-          setChatAgent(contextMenu.agentId);
-          setSelectedNode(contextMenu.agentId);
-          setSidePanelMode('queue');
-        },
-      },
-    ] : []),
-    ...(contextMenu.agentId === 'gloria' ? [
-      {
-        label: 'View Queue',
-        icon: '🔍',
-        onClick: () => {
-          setChatAgent(contextMenu.agentId);
-          setSelectedNode(contextMenu.agentId);
-          setSidePanelMode('queue');
-        },
-      },
-    ] : []),
-    ...(contextMenu.agentId === 'supervisor' ? [
-      {
-        label: 'View Kanban',
-        icon: '📋',
-        onClick: () => {
-          setChatAgent(contextMenu.agentId);
-          setSelectedNode(contextMenu.agentId);
-          setSidePanelMode('kanban');
         },
       },
     ] : []),
@@ -329,7 +299,7 @@ export default function App() {
               color: '#64748b',
               transition: 'bottom 0.2s ease',
             }}>
-              Click a node to chat · Scroll to zoom · Drag to pan
+              Click node = queue · Right-click = options · Scroll = zoom · Drag = pan
             </div>
           </div>
 
@@ -391,6 +361,14 @@ export default function App() {
         {chatNodeData && sidePanelMode === 'kanban' && chatAgent === 'supervisor' && (
           <KanbanBoard
             node={chatNodeData}
+            onClose={() => setChatAgent(null)}
+            onSwitchToChat={() => setSidePanelMode('chat')}
+          />
+        )}
+        {chatNodeData && sidePanelMode === 'prompt' && chatAgent && (
+          <PromptEditor
+            node={chatNodeData}
+            agentId={chatAgent}
             onClose={() => setChatAgent(null)}
             onSwitchToChat={() => setSidePanelMode('chat')}
           />

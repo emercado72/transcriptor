@@ -798,6 +798,35 @@ export function startServer(port?: number): void {
     logger.info('Fisher endpoints skipped (gpu-worker mode)');
   }
 
+  // -- Agent Prompt Endpoints (view/edit system prompts at runtime) --
+  app.get('/api/agents/:agentId/prompt', (req, res) => {
+    const { agentId } = req.params;
+    const prompt = AGENT_SYSTEM_PROMPTS[agentId];
+    if (!prompt) {
+      return res.status(404).json({ error: 'No prompt found for agent: ' + agentId });
+    }
+    res.json({ agentId, prompt });
+  });
+
+  app.put('/api/agents/:agentId/prompt', (req, res) => {
+    const { agentId } = req.params;
+    const { prompt } = req.body;
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ error: 'prompt (string) required in body' });
+    }
+    AGENT_SYSTEM_PROMPTS[agentId] = prompt;
+    logger.info('Prompt updated for agent: ' + agentId + ' (' + prompt.length + ' chars)');
+    res.json({ agentId, updated: true, length: prompt.length });
+  });
+
+  app.get('/api/agents/prompts', (_req, res) => {
+    const prompts: Record<string, { agentId: string; length: number; preview: string }> = {};
+    for (const [id, p] of Object.entries(AGENT_SYSTEM_PROMPTS)) {
+      prompts[id] = { agentId: id, length: p.length, preview: p.slice(0, 120) + '...' };
+    }
+    res.json(prompts);
+  });
+
   // ══════════════════════════════════════
   //  GLORIA REVIEW ENDPOINTS
   // ══════════════════════════════════════
