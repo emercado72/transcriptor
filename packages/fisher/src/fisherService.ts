@@ -99,10 +99,12 @@ export async function provisionWorker(): Promise<string> {
   } catch (err) {
     workerInfo.state = 'error';
     workerInfo.error = (err as Error).message;
-    // Destroy the failed instance so it doesn't keep running and costing money
+    // Keep the instance alive so we can SSH in and troubleshoot.
+    // It will be cleaned up on the next provisionWorker() call or via cleanupOrphans().
     if (workerInfo.instanceId) {
-      logger.warn('Provisioning failed, destroying instance ' + workerInfo.instanceId + ' to avoid orphan charges');
-      try { await linode.deleteWorker(fisherConfig, workerInfo.instanceId); } catch (e) { logger.error('Post-error cleanup failed: ' + (e as Error).message); }
+      logger.warn('Provisioning failed — instance ' + workerInfo.instanceId + ' (' + workerInfo.ip + ') kept alive for debugging');
+      logger.warn('SSH: ssh root@' + workerInfo.ip);
+      logger.warn('Destroy manually via POST /api/agents/fisher/destroy or /cleanup-orphans');
     }
     throw err;
   }
