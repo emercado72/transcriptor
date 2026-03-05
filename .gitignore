@@ -4,6 +4,7 @@ node_modules/
 
 # Runtime config (user-specific)
 config/yulieth-config.json
+config/agent-prompts.json
 
 # Build outputs
 dist/

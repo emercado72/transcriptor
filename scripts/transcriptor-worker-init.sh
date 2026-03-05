@@ -186,6 +186,12 @@ s3cmd get "$S3_SECRETS/google-credentials.json" "$PROJECT_ROOT/google-credential
   echo "  OK google-credentials.json downloaded" || \
   echo "  WARN google-credentials.json not found in S3"
 
+# Download agent prompts (shared across all workers)
+mkdir -p "$TRANSCRIPTOR_DIR/config"
+s3cmd get "$S3_SECRETS/agent-prompts.json" "$TRANSCRIPTOR_DIR/config/agent-prompts.json" --force 2>/dev/null && \
+  echo "  OK agent-prompts.json downloaded" || \
+  echo "  WARN agent-prompts.json not found in S3 (will use defaults)"
+
 # Gloria systemd service (auto-restart on crash, survives SSH disconnect)
 cat > /etc/systemd/system/gloria.service << EOF
 [Unit]

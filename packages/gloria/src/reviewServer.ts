@@ -799,6 +799,72 @@ export function startServer(port?: number): void {
   }
 
   // -- Agent Prompt Endpoints (view/edit system prompts at runtime) --
+  // Prompts persist to config/agent-prompts.json and sync to S3
+
+  const PROMPTS_FILE = path.resolve(import.meta.dirname, '../../../config/agent-prompts.json');
+
+  function loadPromptsFromDisk(): void {
+    try {
+      if (fs.existsSync(PROMPTS_FILE)) {
+        const raw = fs.readFileSync(PROMPTS_FILE, 'utf-8');
+        const saved = JSON.parse(raw) as Record<string, string>;
+        let count = 0;
+        for (const [id, prompt] of Object.entries(saved)) {
+          if (prompt && typeof prompt === 'string') {
+            AGENT_SYSTEM_PROMPTS[id] = prompt;
+            count++;
+          }
+        }
+        logger.info(`Loaded ${count} saved prompt(s) from ${PROMPTS_FILE}`);
+      }
+    } catch (err) {
+      logger.warn('Failed to load prompts from disk: ' + (err as Error).message);
+    }
+  }
+
+  function savePromptsToDisk(): void {
+    try {
+      const dir = path.dirname(PROMPTS_FILE);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(PROMPTS_FILE, JSON.stringify(AGENT_SYSTEM_PROMPTS, null, 2), 'utf-8');
+      logger.info(`Prompts saved to ${PROMPTS_FILE}`);
+    } catch (err) {
+      logger.error('Failed to save prompts to disk: ' + (err as Error).message);
+    }
+  }
+
+  async function syncPromptsToS3(): Promise<void> {
+    try {
+      const { execSync } = await import('child_process');
+      execSync(
+        `s3cmd put ${PROMPTS_FILE} s3://t2025-registry/transcriptor/agent-prompts.json --force 2>/dev/null`,
+        { encoding: 'utf-8', timeout: 15_000 },
+      );
+      logger.info('Prompts synced to S3');
+    } catch (err) {
+      logger.warn('S3 sync failed (s3cmd not configured or unavailable): ' + (err as Error).message);
+    }
+  }
+
+  async function loadPromptsFromS3(): Promise<void> {
+    try {
+      if (fs.existsSync(PROMPTS_FILE)) return; // local file takes priority
+      const { execSync } = await import('child_process');
+      execSync(
+        `s3cmd get s3://t2025-registry/transcriptor/agent-prompts.json ${PROMPTS_FILE} --force 2>/dev/null`,
+        { encoding: 'utf-8', timeout: 15_000 },
+      );
+      logger.info('Prompts downloaded from S3');
+      loadPromptsFromDisk();
+    } catch {
+      // S3 not available or no saved prompts — use defaults
+    }
+  }
+
+  // Load saved prompts on startup (disk first, then S3 fallback)
+  loadPromptsFromDisk();
+  void loadPromptsFromS3();
+
   app.get('/api/agents/:agentId/prompt', (req, res) => {
     const { agentId } = req.params;
     const prompt = AGENT_SYSTEM_PROMPTS[agentId];
@@ -808,15 +874,18 @@ export function startServer(port?: number): void {
     res.json({ agentId, prompt });
   });
 
-  app.put('/api/agents/:agentId/prompt', (req, res) => {
+  app.put('/api/agents/:agentId/prompt', async (req, res) => {
     const { agentId } = req.params;
     const { prompt } = req.body;
     if (!prompt || typeof prompt !== 'string') {
       return res.status(400).json({ error: 'prompt (string) required in body' });
     }
     AGENT_SYSTEM_PROMPTS[agentId] = prompt;
+    savePromptsToDisk();
     logger.info('Prompt updated for agent: ' + agentId + ' (' + prompt.length + ' chars)');
     res.json({ agentId, updated: true, length: prompt.length });
+    // Sync to S3 in background (don't block response)
+    void syncPromptsToS3();
   });
 
   app.get('/api/agents/prompts', (_req, res) => {
