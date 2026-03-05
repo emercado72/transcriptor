@@ -8,6 +8,7 @@ import QueuePanel from './components/QueuePanel.js';
 import ProcessingQueuePanel from './components/ProcessingQueuePanel.js';
 import LinaFanneryQueuePanel from './components/LinaFanneryQueuePanel.js';
 import GloriaQueuePanel from './components/GloriaQueuePanel.js';
+import FisherQueuePanel from './components/FisherQueuePanel.js';
 import KanbanBoard from './components/KanbanBoard.js';
 import ReviewPage from './components/ReviewPage.js';
 import ContextMenu from './components/ContextMenu.js';
@@ -356,6 +357,19 @@ export default function App() {
             node={chatNodeData}
             onClose={() => setChatAgent(null)}
             onSwitchToChat={() => setSidePanelMode('chat')}
+          />
+        )}
+        {chatNodeData && sidePanelMode === 'queue' && chatAgent === 'fisher' && (
+          <FisherQueuePanel
+            node={chatNodeData}
+            onClose={() => setChatAgent(null)}
+            onSwitchToChat={() => setSidePanelMode('chat')}
+          />
+        )}
+        {chatNodeData && sidePanelMode === 'queue' && chatAgent && !['yulieth','chucho','jaime','lina','fannery','gloria','fisher'].includes(chatAgent) && (
+          <ChatPanel
+            node={chatNodeData}
+            onClose={() => setChatAgent(null)}
           />
         )}
         {chatNodeData && sidePanelMode === 'kanban' && chatAgent === 'supervisor' && (
