@@ -3,6 +3,8 @@ import type { AgentNode, AgentId } from '../types/index.js';
 
 // Agents that have processing prompts (sent to Claude for actual data work)
 const PROCESSING_AGENTS = new Set(['jaime', 'lina']);
+// Agents that have a document template (JSON config)
+const TEMPLATE_AGENTS = new Set(['fannery']);
 
 interface ProcessingPrompt { key: string; label: string; prompt: string; length: number }
 
@@ -15,7 +17,8 @@ interface Props {
 
 export default function PromptEditor({ node, agentId, onClose, onSwitchToChat }: Props) {
   const hasProcessing = PROCESSING_AGENTS.has(agentId);
-  const [tab, setTab] = useState<'processing' | 'chat'>(hasProcessing ? 'processing' : 'chat');
+  const hasTemplate = TEMPLATE_AGENTS.has(agentId);
+  const [tab, setTab] = useState<'processing' | 'chat' | 'template'>(hasTemplate ? 'template' : hasProcessing ? 'processing' : 'chat');
   const [prompt, setPrompt] = useState('');
   const [original, setOriginal] = useState('');
   const [loading, setLoading] = useState(true);
@@ -54,9 +57,22 @@ export default function PromptEditor({ node, agentId, onClose, onSwitchToChat }:
       .catch(() => { setProcessingPrompts([]); setLoading(false); });
   }, [agentId]);
 
+  // Load document template (Fannery)
+  const loadTemplate = useCallback(() => {
+    setLoading(true);
+    fetch('/api/agents/fannery/template')
+      .then(r => r.json())
+      .then(data => {
+        const json = JSON.stringify(data, null, 2);
+        setPrompt(json); setOriginal(json); setPromptLabel('Document Template'); setLoading(false);
+      })
+      .catch(() => { setPrompt('{}'); setOriginal('{}'); setLoading(false); });
+  }, []);
+
   useEffect(() => {
     setStatus('idle');
-    if (tab === 'processing' && hasProcessing) loadProcessingPrompts();
+    if (tab === 'template' && hasTemplate) loadTemplate();
+    else if (tab === 'processing' && hasProcessing) loadProcessingPrompts();
     else loadChatPrompt();
   }, [agentId, tab]);
 
@@ -72,7 +88,14 @@ export default function PromptEditor({ node, agentId, onClose, onSwitchToChat }:
     setStatus('idle');
     try {
       let res;
-      if (tab === 'processing') {
+      if (tab === 'template') {
+        let parsed;
+        try { parsed = JSON.parse(prompt); } catch { setStatus('error'); setSaving(false); return; }
+        res = await fetch('/api/agents/fannery/template', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(parsed),
+        });
+      } else if (tab === 'processing') {
         res = await fetch('/api/processing-prompts/' + selectedKey, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ prompt, label: promptLabel }),
@@ -114,14 +137,23 @@ export default function PromptEditor({ node, agentId, onClose, onSwitchToChat }:
         </div>
       </div>
 
-      {/* Tabs (only show if agent has processing prompts) */}
-      {hasProcessing && (
+      {/* Tabs */}
+      {(hasProcessing || hasTemplate) && (
         <div style={{ display: 'flex', borderBottom: '1px solid #1e293b' }}>
-          <button onClick={() => setTab('processing')}
-            style={{ flex: 1, padding: '8px', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: 600,
-              background: tab === 'processing' ? '#1e293b' : 'transparent', color: tab === 'processing' ? node.color : '#64748b' }}>
-            Processing Prompt
-          </button>
+          {hasTemplate && (
+            <button onClick={() => setTab('template')}
+              style={{ flex: 1, padding: '8px', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: 600,
+                background: tab === 'template' ? '#1e293b' : 'transparent', color: tab === 'template' ? node.color : '#64748b' }}>
+              Document Template
+            </button>
+          )}
+          {hasProcessing && (
+            <button onClick={() => setTab('processing')}
+              style={{ flex: 1, padding: '8px', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: 600,
+                background: tab === 'processing' ? '#1e293b' : 'transparent', color: tab === 'processing' ? node.color : '#64748b' }}>
+              Processing Prompt
+            </button>
+          )}
           <button onClick={() => setTab('chat')}
             style={{ flex: 1, padding: '8px', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: 600,
               background: tab === 'chat' ? '#1e293b' : 'transparent', color: tab === 'chat' ? node.color : '#64748b' }}>

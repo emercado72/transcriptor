@@ -1,0 +1,66 @@
+{
+  "id": "default",
+  "name": "Tecnoreuniones Standard",
+  "document": {
+    "font": "Calibri",
+    "bodySize": 11,
+    "titleSize": 12,
+    "headerFooterSize": 9,
+    "lineSpacing": 1.08,
+    "afterParagraph": 8,
+    "margins": {
+      "top": 2,
+      "bottom": 2,
+      "left": 2,
+      "right": 2
+    },
+    "pageSize": "letter"
+  },
+  "header": {
+    "text": "Tecnoreuniones.com",
+    "alignment": "right"
+  },
+  "footer": {
+    "text": "Pagina {PAGE} de {PAGES}",
+    "alignment": "center"
+  },
+  "cover": {
+    "line1": "CONJUNTO RESIDENCIAL {BUILDING_NAME}",
+    "line2": "{ASSEMBLY_TYPE}",
+    "line3": "{DATE}",
+    "line4": "ACTA DE ASAMBLEA",
+    "bold": true,
+    "alignment": "center"
+  },
+  "sections": {
+    "preambulo": {
+      "titleBold": true,
+      "titleUppercase": true,
+      "bodyAlignment": "justified"
+    },
+    "ordenDelDia": {
+      "titleBold": true,
+      "numberedList": true,
+      "numberFormat": "decimal"
+    },
+    "paragraphNormal": {
+      "titleBold": true,
+      "bodyAlignment": "justified"
+    },
+    "votingQuestion": {
+      "titleBold": true,
+      "includeTable": true,
+      "annexNote": "Ver anexo de acta de votacion detallada."
+    },
+    "firma": {
+      "alignment": "center",
+      "signatureLines": true
+    }
+  },
+  "formatting": {
+    "namesUppercase": true,
+    "namesAlwaysBold": false,
+    "sectionTitlePrefix": "",
+    "votingTableStyle": "bordered"
+  }
+}

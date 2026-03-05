@@ -1045,6 +1045,55 @@ Respond ONLY with valid JSON.`,
     void syncProcessingPromptsToS3();
   });
 
+  // -- Fannery Document Template Endpoints --
+  const TEMPLATE_FILE = path.resolve(import.meta.dirname, '../../../config/document-template.json');
+
+  function loadTemplate(): any {
+    try {
+      if (fs.existsSync(TEMPLATE_FILE)) {
+        return JSON.parse(fs.readFileSync(TEMPLATE_FILE, 'utf-8'));
+      }
+    } catch (err) {
+      logger.warn('Failed to load template: ' + (err as Error).message);
+    }
+    return null;
+  }
+
+  function saveTemplate(template: any): void {
+    try {
+      const dir = path.dirname(TEMPLATE_FILE);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(TEMPLATE_FILE, JSON.stringify(template, null, 2), 'utf-8');
+      logger.info('Document template saved');
+    } catch (err) {
+      logger.error('Failed to save template: ' + (err as Error).message);
+    }
+  }
+
+  async function syncTemplateToS3(): Promise<void> {
+    try {
+      const { execSync } = await import('child_process');
+      execSync(`s3cmd put ${TEMPLATE_FILE} s3://t2025-registry/transcriptor/document-template.json --force 2>/dev/null`, { encoding: 'utf-8', timeout: 15_000 });
+      logger.info('Document template synced to S3');
+    } catch { /* s3cmd not available */ }
+  }
+
+  app.get('/api/agents/fannery/template', (_req, res) => {
+    const template = loadTemplate();
+    if (!template) return res.status(404).json({ error: 'No template found' });
+    res.json(template);
+  });
+
+  app.put('/api/agents/fannery/template', async (req, res) => {
+    const template = req.body;
+    if (!template || typeof template !== 'object') {
+      return res.status(400).json({ error: 'Template object required' });
+    }
+    saveTemplate(template);
+    res.json({ updated: true });
+    void syncTemplateToS3();
+  });
+
   // ══════════════════════════════════════
   //  GLORIA REVIEW ENDPOINTS
   // ══════════════════════════════════════
