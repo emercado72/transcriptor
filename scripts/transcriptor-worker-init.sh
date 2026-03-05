@@ -234,9 +234,10 @@ echo "  Redis:  $(redis-cli --version 2>/dev/null | awk '{print $2}')"
 echo "  Swap:   $(free -h | grep Swap | awk '{print $2}')"
 echo "  Disk:   $(df -h / | tail -1 | awk '{print $3 " / " $2}')"
 echo ""
-echo "  NEXT STEPS:"
-echo "  1. reboot"
-echo "  2. nvidia-smi  (verify GPU)"
-echo "  3. systemctl start gloria"
-echo "  4. Dashboard at http://<IP>:3001"
+echo "  Rebooting to load NVIDIA kernel modules"
+echo "  Gloria will auto-start via systemd after reboot"
 echo "============================================"
+
+# Reboot to load NVIDIA kernel modules + auto-start Gloria via systemd
+# (Required: NVIDIA drivers need kernel modules loaded after install)
+shutdown -r now

@@ -25,6 +25,27 @@ export async function getPipelineOverview(): Promise<PipelineOverview> {
   return fetchJson('/pipeline/overview');
 }
 
+export interface FisherWorkerInfo {
+  instanceId: number | null;
+  ip: string | null;
+  label: string | null;
+  state: string;
+  currentJobId: string | null;
+  createdAt: string | null;
+  error: string | null;
+}
+
+export interface FisherStatus {
+  worker: FisherWorkerInfo;
+  config: { region?: string; instanceType?: string; labelPrefix?: string };
+  backups: { jobId: string; durationMs: number; filesBackedUp: string[] }[];
+  heartbeats: unknown[];
+}
+
+export async function getFisherStatus(): Promise<FisherStatus> {
+  return fetchJson('/agents/fisher/status');
+}
+
 export async function sendChatMessage(agentId: string, message: string): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120_000); // 2 min timeout

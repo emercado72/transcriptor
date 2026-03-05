@@ -60,28 +60,69 @@ export function getStatus(): FisherStatus {
 export async function provisionWorker(): Promise<string> {
   if (!fisherConfig) throw new Error('Fisher not initialized');
   if (workerInfo.state !== 'idle' && workerInfo.state !== 'error') throw new Error('Cannot provision: worker is ' + workerInfo.state);
+
+  // Cleanup: if recovering from error with an existing instance, destroy it first
+  if (workerInfo.state === 'error' && workerInfo.instanceId) {
+    logger.warn('Cleaning up orphaned worker ' + workerInfo.instanceId + ' from previous error');
+    try { await linode.deleteWorker(fisherConfig, workerInfo.instanceId); } catch (e) { logger.error('Orphan cleanup failed: ' + (e as Error).message); }
+    workerInfo = { instanceId: null, ip: null, label: null, state: 'idle', currentJobId: null, createdAt: null, error: null };
+  }
+
+  // Also cleanup any orphaned instances from previous runs (label prefix match)
+  try {
+    const orphans = await linode.listWorkers(fisherConfig);
+    if (orphans.length > 0) {
+      logger.warn('Found ' + orphans.length + ' orphaned worker(s), cleaning up...');
+      for (const orphan of orphans) {
+        try { await linode.deleteWorker(fisherConfig, orphan.id); } catch (e) { logger.error('Orphan ' + orphan.id + ' cleanup: ' + (e as Error).message); }
+      }
+    }
+  } catch (e) { logger.error('Orphan scan failed: ' + (e as Error).message); }
+
   workerInfo.state = 'provisioning';
   workerInfo.error = null;
+  workerInfo.createdAt = new Date().toISOString();
   try {
     const instance = await linode.createWorker(fisherConfig);
     workerInfo.instanceId = instance.id;
     workerInfo.ip = instance.ipv4[0];
     workerInfo.label = instance.label;
-    workerInfo.createdAt = new Date().toISOString();
     workerInfo.state = 'booting';
     await linode.waitForStatus(fisherConfig, instance.id, 'running', 300_000);
     logger.info('Worker ' + instance.id + ' running at ' + workerInfo.ip);
-    logger.info('Waiting for Gloria (init script ~5min)...');
-    const ready = await linode.waitForGloria(workerInfo.ip!, 3001, 720_000, 20_000);
-    if (!ready) throw new Error('Gloria did not come online within 12 minutes');
+    logger.info('Waiting for Gloria (init script ~5min + reboot)...');
+    const ready = await linode.waitForGloria(workerInfo.ip!, 3001, 900_000, 20_000);
+    if (!ready) throw new Error('Gloria did not come online within 15 minutes');
     workerInfo.state = 'processing';
     monitor.startHeartbeat(instance.id, workerInfo.ip!, workerInfo.label!, 30_000);
     return workerInfo.ip!;
   } catch (err) {
     workerInfo.state = 'error';
     workerInfo.error = (err as Error).message;
+    // Destroy the failed instance so it doesn't keep running and costing money
+    if (workerInfo.instanceId) {
+      logger.warn('Provisioning failed, destroying instance ' + workerInfo.instanceId + ' to avoid orphan charges');
+      try { await linode.deleteWorker(fisherConfig, workerInfo.instanceId); } catch (e) { logger.error('Post-error cleanup failed: ' + (e as Error).message); }
+    }
     throw err;
   }
+}
+
+/** Find and destroy any orphaned GPU workers (matching label prefix) */
+export async function cleanupOrphans(): Promise<{ destroyed: number; ids: number[] }> {
+  if (!fisherConfig) throw new Error('Fisher not initialized');
+  const workers = await linode.listWorkers(fisherConfig);
+  // Don't destroy the current active worker
+  const orphans = workers.filter(w => w.id !== workerInfo.instanceId);
+  const ids: number[] = [];
+  for (const orphan of orphans) {
+    try {
+      await linode.deleteWorker(fisherConfig, orphan.id);
+      ids.push(orphan.id);
+      logger.info('Destroyed orphan: ' + orphan.id + ' (' + orphan.label + ')');
+    } catch (e) { logger.error('Failed to destroy orphan ' + orphan.id + ': ' + (e as Error).message); }
+  }
+  return { destroyed: ids.length, ids };
 }
 
 export function startMonitoring(jobId: string, backupAtStage = 'completed', pollMs = 30_000): void {

@@ -1,5 +1,6 @@
 import { useRef, useCallback, useState, useEffect, type PointerEvent as ReactPointerEvent } from 'react';
 import type { AgentNode, AgentEdge, AgentId, AgentStatus, AgentStats } from '../types/index.js';
+import type { FisherWorkerInfo } from '../api/client.js';
 
 interface Props {
   nodes: AgentNode[];
@@ -10,9 +11,12 @@ interface Props {
   onSelectNode: (id: AgentId | null) => void;
   onMoveNode: (id: AgentId, x: number, y: number) => void;
   onNodeContextMenu?: (id: AgentId, x: number, y: number) => void;
+  fisherWorker?: FisherWorkerInfo | null;
 }
 
 const NODE_RADIUS = 40;
+const GPU_RADIUS = 36;
+const GPU_OFFSET_Y = 150;
 
 function statusGlow(state: AgentStatus['state']): string {
   switch (state) {
@@ -29,6 +33,52 @@ function cubicSpline(x1: number, y1: number, x2: number, y2: number): string {
   return `M ${x1} ${y1} C ${cp1x} ${y1}, ${cp2x} ${y2}, ${x2} ${y2}`;
 }
 
+/** Vertical-biased spline (for Fisher → GPU worker below) */
+function verticalSpline(x1: number, y1: number, x2: number, y2: number): string {
+  const dy = y2 - y1;
+  const cp1y = y1 + dy * 0.35;
+  const cp2y = y2 - dy * 0.35;
+  return `M ${x1} ${y1} C ${x1} ${cp1y}, ${x2} ${cp2y}, ${x2} ${y2}`;
+}
+
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return seconds + 's';
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m < 60) return m + 'm ' + s + 's';
+  const h = Math.floor(m / 60);
+  return h + 'h ' + (m % 60) + 'm';
+}
+
+/** Determine GPU worker circle position, offset from Fisher to avoid collisions with other nodes */
+function gpuWorkerPosition(fisherNode: AgentNode, allNodes: AgentNode[]): { x: number; y: number } {
+  // Default: directly below Fisher
+  const baseX = fisherNode.x;
+  const baseY = fisherNode.y + GPU_OFFSET_Y;
+
+  // Check for collisions with existing nodes
+  const minDist = NODE_RADIUS + GPU_RADIUS + 20;
+  const candidates = [
+    { x: baseX, y: baseY },
+    { x: baseX - 120, y: baseY },
+    { x: baseX + 120, y: baseY },
+    { x: baseX - 60, y: baseY + 40 },
+    { x: baseX + 60, y: baseY + 40 },
+  ];
+
+  for (const pos of candidates) {
+    const collision = allNodes.some(n => {
+      const dx = n.x - pos.x;
+      const dy = n.y - pos.y;
+      return Math.sqrt(dx * dx + dy * dy) < minDist;
+    });
+    if (!collision) return pos;
+  }
+
+  // Fallback: place far below
+  return { x: baseX, y: baseY + 80 };
+}
+
 export default function AgentGraph({
   nodes,
   edges,
@@ -38,6 +88,7 @@ export default function AgentGraph({
   onSelectNode,
   onMoveNode,
   onNodeContextMenu,
+  fisherWorker,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [dragging, setDragging] = useState<AgentId | null>(null);
@@ -46,8 +97,32 @@ export default function AgentGraph({
   const [isPanning, setIsPanning] = useState(false);
   const panStart = useRef({ x: 0, y: 0, vx: 0, vy: 0 });
 
+  // Tick every second for GPU worker elapsed timer
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!fisherWorker?.createdAt) return;
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [fisherWorker?.createdAt]);
+
   // ── Node positions as a map for quick lookup ──
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+
+  // ── GPU worker state ──
+  const fisherNode = nodeMap.get('fisher');
+  const showGpuWorker = fisherWorker && fisherNode && fisherWorker.state !== 'idle';
+  const gpuState = fisherWorker?.state ?? 'idle';
+  const isProvisioning = gpuState === 'provisioning' || gpuState === 'booting';
+  const isReady = gpuState === 'processing';
+  const isWinding = gpuState === 'backing_up' || gpuState === 'destroying';
+  const isError = gpuState === 'error';
+
+  const gpuPos = fisherNode ? gpuWorkerPosition(fisherNode, nodes) : { x: 0, y: 0 };
+  const gpuColor = isReady ? '#a3e635' : isError ? '#ef4444' : isWinding ? '#64748b' : '#f97316';
+
+  const elapsed = fisherWorker?.createdAt
+    ? Math.max(0, Math.floor((now - new Date(fisherWorker.createdAt).getTime()) / 1000))
+    : 0;
 
   // ── Pointer events for dragging nodes ──
   const handleNodePointerDown = useCallback((e: ReactPointerEvent<SVGGElement>, id: AgentId) => {
@@ -151,6 +226,13 @@ export default function AgentGraph({
             <feMergeNode in="SourceGraphic" />
           </feMerge>
         </filter>
+        <filter id="glow-gpu">
+          <feGaussianBlur stdDeviation="6" result="blur" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
         <filter id="shadow">
           <feDropShadow dx="0" dy="2" stdDeviation="3" floodOpacity="0.3" />
         </filter>
@@ -210,6 +292,163 @@ export default function AgentGraph({
           </g>
         );
       })}
+
+      {/* ── GPU Worker spline + node ── */}
+      {showGpuWorker && fisherNode && (
+        <g key="gpu-worker">
+          {/* Dashed spline from Fisher to GPU worker */}
+          <path
+            d={verticalSpline(
+              fisherNode.x, fisherNode.y + NODE_RADIUS,
+              gpuPos.x, gpuPos.y - GPU_RADIUS,
+            )}
+            fill="none"
+            stroke={gpuColor}
+            strokeWidth={2}
+            strokeDasharray="8 5"
+            opacity={0.7}
+          >
+            {isProvisioning && (
+              <animate
+                attributeName="stroke-dashoffset"
+                values="0;-26"
+                dur="1.5s"
+                repeatCount="indefinite"
+              />
+            )}
+          </path>
+
+          {/* GPU worker group */}
+          <g
+            transform={`translate(${gpuPos.x}, ${gpuPos.y})`}
+            style={{ cursor: 'pointer' }}
+            onClick={() => onSelectNode('fisher')}
+          >
+            {/* Outer glow ring */}
+            <circle
+              r={GPU_RADIUS + 8}
+              fill="none"
+              stroke={gpuColor}
+              strokeWidth={2.5}
+              filter="url(#glow-gpu)"
+            >
+              {isProvisioning && (
+                <animate
+                  attributeName="opacity"
+                  values="0.8;0.15;0.8"
+                  dur="1.8s"
+                  repeatCount="indefinite"
+                />
+              )}
+              {isReady && (
+                <animate
+                  attributeName="opacity"
+                  values="0.5;0.3;0.5"
+                  dur="3s"
+                  repeatCount="indefinite"
+                />
+              )}
+              {!isProvisioning && !isReady && (
+                <set attributeName="opacity" to="0.3" />
+              )}
+            </circle>
+
+            {/* Main circle body */}
+            <circle
+              r={GPU_RADIUS}
+              fill={isReady ? '#1a2e05' : isError ? '#2a0a0a' : '#2a1800'}
+              filter="url(#shadow)"
+              opacity={0.95}
+            />
+            <circle
+              r={GPU_RADIUS}
+              fill="none"
+              stroke={gpuColor}
+              strokeWidth={2.5}
+            >
+              {isProvisioning && (
+                <animate
+                  attributeName="opacity"
+                  values="1;0.3;1"
+                  dur="1.8s"
+                  repeatCount="indefinite"
+                />
+              )}
+            </circle>
+
+            {/* Inner border */}
+            <circle
+              r={GPU_RADIUS - 3}
+              fill="none"
+              stroke="rgba(255,255,255,0.08)"
+              strokeWidth={1}
+            />
+
+            {/* IP address inside the circle */}
+            <text
+              textAnchor="middle"
+              dominantBaseline="central"
+              fill={isReady ? '#d9f99d' : isError ? '#fca5a5' : '#fed7aa'}
+              fontSize="8.5"
+              fontFamily="'SF Mono', 'Fira Code', 'Consolas', monospace"
+              fontWeight="600"
+              letterSpacing="-0.3"
+              style={{ pointerEvents: 'none', userSelect: 'none' }}
+            >
+              {fisherWorker!.ip || '...'}
+            </text>
+
+            {/* Label below */}
+            <text
+              y={GPU_RADIUS + 16}
+              textAnchor="middle"
+              fill="#94a3b8"
+              fontSize="10"
+              fontWeight="500"
+              style={{ pointerEvents: 'none', userSelect: 'none' }}
+            >
+              GPU Worker
+            </text>
+
+            {/* Elapsed timer below label */}
+            <text
+              y={GPU_RADIUS + 30}
+              textAnchor="middle"
+              fill={isReady ? '#a3e635' : '#f97316'}
+              fontSize="11"
+              fontFamily="'SF Mono', 'Fira Code', 'Consolas', monospace"
+              fontWeight="700"
+              style={{ pointerEvents: 'none', userSelect: 'none' }}
+            >
+              {formatElapsed(elapsed)}
+            </text>
+
+            {/* State label at top */}
+            <g transform={`translate(0, ${-GPU_RADIUS - 14})`}>
+              <rect
+                x={-30}
+                y={-8}
+                width={60}
+                height={16}
+                rx={8}
+                fill={gpuColor}
+                opacity={0.2}
+              />
+              <text
+                textAnchor="middle"
+                dominantBaseline="central"
+                fill={gpuColor}
+                fontSize="8"
+                fontWeight="700"
+                letterSpacing="0.5"
+                style={{ pointerEvents: 'none', userSelect: 'none' }}
+              >
+                {isReady ? 'ONLINE' : isProvisioning ? 'BOOTING' : isWinding ? gpuState.toUpperCase() : gpuState.toUpperCase()}
+              </text>
+            </g>
+          </g>
+        </g>
+      )}
 
       {/* Nodes */}
       {nodes.map((node) => {

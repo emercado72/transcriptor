@@ -793,6 +793,16 @@ export function startServer(port?: number): void {
       }
     });
 
+    app.post('/api/agents/fisher/cleanup-orphans', async (_req, res) => {
+      try {
+        const f = await getFisher();
+        const result = await f.cleanupOrphans();
+        res.json({ ok: true, ...result });
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    });
+
     logger.info('Fisher endpoints registered (local mode)');
   } else {
     logger.info('Fisher endpoints skipped (gpu-worker mode)');

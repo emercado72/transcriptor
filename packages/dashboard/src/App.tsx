@@ -21,7 +21,8 @@ import {
   loadLayout,
   getAutoArrangedPositions,
 } from './hooks/useAgentTopology.js';
-import { getAgentStatuses, getAgentStats, getPipelineOverview } from './api/client.js';
+import { getAgentStatuses, getAgentStats, getPipelineOverview, getFisherStatus } from './api/client.js';
+import type { FisherWorkerInfo } from './api/client.js';
 import type { AgentId, AgentNode, AgentStatus, AgentStats, PipelineOverview } from './types/index.js';
 
 // ── Mock data for when the API isn't running yet ──
@@ -107,6 +108,7 @@ export default function App() {
   const [statuses, setStatuses] = useState<Record<AgentId, AgentStatus>>(mockStatuses);
   const [stats, setStats] = useState<Record<AgentId, AgentStats>>(mockStats);
   const [overview, setOverview] = useState<PipelineOverview>(mockOverview);
+  const [fisherWorker, setFisherWorker] = useState<FisherWorkerInfo | null>(null);
 
   // ── Save layout on drag (debounced) ──
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -165,6 +167,16 @@ export default function App() {
         setStats(statsMap as Record<AgentId, AgentStats>);
 
         setOverview(overviewData);
+
+        // Fisher GPU worker status
+        try {
+          const fisher = await getFisherStatus();
+          if (!active) return;
+          const fw = fisher.worker;
+          setFisherWorker(fw.state !== 'idle' && (fw.instanceId || fw.state === 'provisioning') ? fw : null);
+        } catch {
+          // Fisher status not available
+        }
       } catch {
         // API not running — keep mock data
       }
@@ -286,6 +298,7 @@ export default function App() {
               onSelectNode={handleSelectNode}
               onMoveNode={handleMoveNode}
               onNodeContextMenu={handleNodeContextMenu}
+              fisherWorker={fisherWorker}
             />
 
             {/* Keyboard hint */}
