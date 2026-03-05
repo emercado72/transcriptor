@@ -896,6 +896,155 @@ export function startServer(port?: number): void {
     res.json(prompts);
   });
 
+  // -- Processing Prompts (the prompts agents send to Claude for actual work) --
+  const PROCESSING_PROMPTS_FILE = path.resolve(import.meta.dirname, '../../../config/processing-prompts.json');
+
+  // Registry of processing prompts with their source locations
+  const PROCESSING_PROMPTS: Record<string, { label: string; prompt: string }> = {};
+
+  function initProcessingPrompts(): void {
+    // Default processing prompts (seeded from agent source code)
+    // These get overridden by saved versions from disk/S3
+
+    if (!PROCESSING_PROMPTS['jaime:segmentation']) {
+      PROCESSING_PROMPTS['jaime:segmentation'] = {
+        label: 'Jaime — Section Segmentation',
+        prompt: `Eres un experto en actas de asamblea de propiedad horizontal colombiana.
+Recibirás un índice de utterances de una transcripción de asamblea (formato: índice|hablante|texto).
+Tu tarea: identificar las secciones temáticas del acta y devolver un plan de segmentación en JSON.
+
+Secciones típicas de un acta (usa EXACTAMENTE estos valores en el campo "style"):
+- preambulo: apertura, verificación de quórum, declaración de inicio
+- ordenDelDia: lectura y aprobación del orden del día
+- paragraphNormal: puntos del orden del día, informes, debates
+- votingQuestion: cuando se somete algo a votación
+- firma: cierre, firmas, despedida
+
+Reglas:
+1. Cada sección debe tener al menos 3 utterances salvo preambulo y firma
+2. El acta típicamente tiene 8-15 puntos — identifícalos como secciones paragraphNormal separadas
+3. Agrupa utterances consecutivos del mismo tema en la misma sección
+4. Los utterances de votación y su anuncio de resultado van juntos en una sección votingQuestion
+5. Devuelve SOLO JSON válido, sin markdown, sin explicaciones`,
+      };
+    }
+
+    if (!PROCESSING_PROMPTS['lina:redaction']) {
+      // Load from docs/prompts/superPrompt.md if it exists, otherwise use default
+      const superPromptPath = path.resolve(import.meta.dirname, '../../../docs/prompts/superPrompt.md');
+      let superPrompt = '';
+      try {
+        if (fs.existsSync(superPromptPath)) {
+          superPrompt = fs.readFileSync(superPromptPath, 'utf-8');
+        }
+      } catch { /* use default */ }
+
+      PROCESSING_PROMPTS['lina:redaction'] = {
+        label: 'Lina — Redaction Super Prompt',
+        prompt: superPrompt || `Eres un redactor profesional de actas de asamblea de propiedad horizontal en Colombia.
+Tu trabajo es transformar transcripciones de audio en narrativa formal legal conforme a la Ley 675 de 2001.
+
+Reglas:
+1. Usa lenguaje formal y jurídico colombiano
+2. Mantén la objetividad — no interpretes, narra los hechos
+3. Identifica correctamente a los propietarios por nombre completo y unidad
+4. Los resultados de votaciones deben reflejar exactamente los datos de Robinson
+5. Usa el formato y estilo indicado para cada tipo de sección
+6. Las cifras de coeficientes y quórum deben ser exactas
+7. Respeta la terminología del glosario proporcionado
+8. Los nombres propios de personas SIEMPRE en MAYÚSCULAS SOSTENIDAS`,
+      };
+    }
+
+    if (!PROCESSING_PROMPTS['lina:reconciliation']) {
+      PROCESSING_PROMPTS['lina:reconciliation'] = {
+        label: 'Lina — Speaker Reconciliation',
+        prompt: `You are a speaker diarization reconciler for Colombian property assembly recordings.
+The audio was split into chunks before diarization, so each chunk has independent speaker labels.
+Your job: Create a unified speaker mapping by analyzing boundary continuity, self-introductions, role patterns, vocabulary, and topic continuity.
+Respond ONLY with valid JSON.`,
+      };
+    }
+
+    // Load saved overrides from disk (these take priority)
+    try {
+      if (fs.existsSync(PROCESSING_PROMPTS_FILE)) {
+        const saved = JSON.parse(fs.readFileSync(PROCESSING_PROMPTS_FILE, 'utf-8'));
+        for (const [id, data] of Object.entries(saved as Record<string, { label: string; prompt: string }>)) {
+          PROCESSING_PROMPTS[id] = data;
+        }
+        logger.info(`Loaded ${Object.keys(saved).length} processing prompt(s) from disk`);
+      }
+    } catch (err) {
+      logger.warn('Failed to load processing prompts from disk: ' + (err as Error).message);
+    }
+  }
+
+  function saveProcessingPromptsToDisk(): void {
+    try {
+      const dir = path.dirname(PROCESSING_PROMPTS_FILE);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(PROCESSING_PROMPTS_FILE, JSON.stringify(PROCESSING_PROMPTS, null, 2), 'utf-8');
+      logger.info(`Processing prompts saved to ${PROCESSING_PROMPTS_FILE}`);
+    } catch (err) {
+      logger.error('Failed to save processing prompts: ' + (err as Error).message);
+    }
+  }
+
+  async function syncProcessingPromptsToS3(): Promise<void> {
+    try {
+      const { execSync } = await import('child_process');
+      execSync(
+        `s3cmd put ${PROCESSING_PROMPTS_FILE} s3://t2025-registry/transcriptor/processing-prompts.json --force 2>/dev/null`,
+        { encoding: 'utf-8', timeout: 15_000 },
+      );
+      logger.info('Processing prompts synced to S3');
+    } catch { /* s3cmd not available locally — fine */ }
+  }
+
+  initProcessingPrompts();
+
+  app.get('/api/agents/:agentId/processing-prompt', (req, res) => {
+    const { agentId } = req.params;
+    // Find all processing prompts for this agent
+    const matching = Object.entries(PROCESSING_PROMPTS)
+      .filter(([key]) => key.startsWith(agentId + ':'))
+      .map(([key, data]) => ({ key, ...data }));
+    if (matching.length === 0) {
+      return res.status(404).json({ error: 'No processing prompts for: ' + agentId });
+    }
+    res.json({ agentId, prompts: matching });
+  });
+
+  app.get('/api/processing-prompts', (_req, res) => {
+    const list = Object.entries(PROCESSING_PROMPTS).map(([key, data]) => ({
+      key,
+      label: data.label,
+      length: data.prompt.length,
+      preview: data.prompt.slice(0, 120) + '...',
+    }));
+    res.json(list);
+  });
+
+  app.get('/api/processing-prompts/:key', (req, res) => {
+    const data = PROCESSING_PROMPTS[req.params.key];
+    if (!data) return res.status(404).json({ error: 'Not found: ' + req.params.key });
+    res.json({ key: req.params.key, ...data });
+  });
+
+  app.put('/api/processing-prompts/:key', async (req, res) => {
+    const { key } = req.params;
+    const { prompt, label } = req.body;
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ error: 'prompt (string) required' });
+    }
+    PROCESSING_PROMPTS[key] = { label: label || PROCESSING_PROMPTS[key]?.label || key, prompt };
+    saveProcessingPromptsToDisk();
+    logger.info('Processing prompt updated: ' + key + ' (' + prompt.length + ' chars)');
+    res.json({ key, updated: true, length: prompt.length });
+    void syncProcessingPromptsToS3();
+  });
+
   // ══════════════════════════════════════
   //  GLORIA REVIEW ENDPOINTS
   // ══════════════════════════════════════
