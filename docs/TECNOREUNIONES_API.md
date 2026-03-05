@@ -698,6 +698,91 @@ Deletes the session and invalidates Redis caches for a user.
 
 ---
 
+## Consolidated Results Endpoint (resultsdata.php)
+
+> **RECOMMENDED** for fetching voting results — returns all data in a single call
+> instead of requiring multiple service calls.
+
+### URL
+
+```
+GET https://www.tecnoreuniones.com/vdev/resultsdata.php?a={idAsamblea}&p={idPregunta}&t={token}
+```
+
+### Parameters
+
+| Param | Type   | Required | Description                                                    |
+|-------|--------|----------|----------------------------------------------------------------|
+| `a`   | int    | Yes      | Assembly ID (e.g. `25005`)                                     |
+| `p`   | int    | No       | Question ID. If omitted, returns the active question or the last question |
+| `t`   | string | Yes      | Server token: **`CH253864`**                                   |
+
+### Response (JSON object — NOT an array)
+
+```json
+{
+  "asamblea": {
+    "idAsamblea": 25005,
+    "cliente": "Portal de Valparaíso",
+    "nombreAsamblea": "Asamblea General Ordinaria",
+    "logo": "logo.png",
+    "estado": "EN CURSO",
+    ...
+  },
+  "pregunta": {
+    "idPregunta": 3,
+    "encabezadoPregunta": "¿Aprueba el presupuesto 2026?",
+    "activa": "0",
+    "opciones": "1",
+    ...
+  },
+  "quorum": {
+    "quorum": "86.07",
+    "asistentes": 176,
+    "totalNominal": "176.00"
+  },
+  "consolidado": [
+    {"texto": "SI", "nominal": "150.00", "coeficiente": "73.25", "pquorum": "85.11"},
+    {"texto": "NO", "nominal": "20.00", "coeficiente": "10.50", "pquorum": "12.20"},
+    {"texto": "EN BLANCO", "nominal": "6.00", "coeficiente": "2.32", "pquorum": "2.70"}
+  ],
+  "detallado": [
+    {
+      "Torre": "5",
+      "Unidad": "302",
+      "Propietarios": "HERNÁN TIBERIO CORREA MORENO",
+      "Respuesta": "SI",
+      "coeficiente": "0.4831",
+      "nominal": "1.00",
+      "FechaHora": "2026-03-01 10:15:23",
+      "ip": "192.168.1.50"
+    }
+  ],
+  "novotan": [
+    {"unidad": "5-401", "Propietario": "JUAN PÉREZ", "coeficiente": "0.3200"}
+  ],
+  "snapshot": {
+    "quorum": 86.07,
+    "asistentes": 176,
+    "fhoperacion": "2026-03-01 12:30:00",
+    "listaAsistentes": "[{...}]"
+  }
+}
+```
+
+### Key behavior
+
+- **`consolidado`**: Aggregated by response text. For `opciones=1` queries `respuestas` table; for `opciones>1` queries `respuestasmultiples` table.
+- **`detallado`**: Every individual vote with tower, unit, owner name, response, coefficient, nominal, timestamp, and IP. Same single/multiple table branching.
+- **`novotan`**: Attendees who have NOT voted on this question. For active questions, uses live `asistentes` table. For closed questions, reconstructs from `quorumRespuestas` snapshot.
+- **`snapshot`**: Only present when the question is closed (`activa=0`). Contains the quorum frozen at close time with the full attendee list JSON.
+
+### Advantages over individual service calls
+
+This endpoint replaces the need to call services 1003 + 5 + 1012 + 1002 + 62 separately. One HTTP GET returns everything Robinson needs for a given question.
+
+---
+
 ## Robinson Integration Map
 
 Robinson needs these services to extract data for minute generation:
@@ -708,8 +793,9 @@ Robinson needs these services to extract data for minute generation:
 | `getAttendanceList()`   | **3**                | Delegate/attendance list             |
 | `getQuorumSnapshots()`  | **1007** + **62**    | Assembly status + quorum snapshots   |
 | `getQuestionList()`     | **5**                | List all questions                   |
-| `getVotingResults()`    | **1012**             | Aggregated voting results            |
-| `getVotingDetail()`     | **1002**             | Detailed voting scrutiny             |
+| `getVotingResults()`    | **resultsdata.php**  | Consolidated + detallado + novotan (preferred) |
+| `getVotingResultsLegacy()` | **1012**          | Aggregated voting results (legacy)   |
+| `getVotingDetail()`     | **1002**             | Detailed voting scrutiny (legacy)    |
 | `getOfficers()`         | **8**                | Administrator info                   |
 | `adminLogin()`          | **1**                | Authenticate and get token           |
 

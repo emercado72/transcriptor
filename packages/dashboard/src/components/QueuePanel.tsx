@@ -97,7 +97,16 @@ export default function QueuePanel({ node, onClose, onSwitchToChat, onSwitchToCo
       background: '#1e293b',
       borderLeft: `3px solid ${node.color}`,
       overflow: 'hidden',
-    }}>
+      userSelect: 'text',
+      WebkitUserSelect: 'text',
+    }}
+    onPointerDownCapture={(e) => e.stopPropagation()}
+    onMouseDownCapture={(e) => e.stopPropagation()}
+    onKeyDownCapture={(e) => {
+      e.stopPropagation();
+    }}
+    onContextMenu={(e) => e.stopPropagation()}
+    >
       {/* Header */}
       <div style={{
         display: 'flex',

@@ -1,0 +1,5 @@
+faster-whisper>=1.0.0
+pyannote.audio>=3.1
+torch>=2.0
+pydub>=0.25
+ffmpeg-python>=0.2

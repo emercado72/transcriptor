@@ -5,7 +5,7 @@ import type { EventFolder, EventMetadata, JobId, TranscriptionJob, QueueStats } 
 
 const logger = createLogger('yulieth:jobQueue');
 
-const QUEUE_NAME = 'transcriptor:events';
+const QUEUE_NAME = 'transcriptor-events';
 
 let queue: Queue | null = null;
 

@@ -1,10 +1,14 @@
 import axios from 'axios';
 import { createLogger, getEnvConfig } from '@transcriptor/shared';
+import { transcribeLocal } from './localTranscriber.js';
+import type { LocalTranscriberOptions } from './localTranscriber.js';
 
 const logger = createLogger('jaime:transcription');
 
 // ── Types ──
 export type ScribeJobId = string;
+
+export type TranscriptionProvider = 'elevenlabs' | 'local';
 
 export interface ScribeOptions {
   language?: string;
@@ -32,6 +36,70 @@ export interface ScribeTranscript {
   duration: number;
   language: string;
 }
+
+// ── Provider Detection ──
+export function getTranscriptionProvider(): TranscriptionProvider {
+  const provider = process.env.TRANSCRIPTION_PROVIDER?.toLowerCase();
+  if (provider === 'local') return 'local';
+  if (provider === 'elevenlabs') return 'elevenlabs';
+
+  // Auto-detect: if no ElevenLabs key is set, default to local
+  const env = getEnvConfig();
+  if (!env.elevenLabsApiKey) {
+    logger.info('No ELEVENLABS_API_KEY set, defaulting to local transcription');
+    return 'local';
+  }
+
+  return 'elevenlabs';
+}
+
+// ── Unified Transcription Entry Point ──
+export async function transcribeAudio(
+  audioPath: string,
+  options: ScribeOptions = {},
+  progressCtx?: { jobId: string; segmentIndex: number },
+): Promise<ScribeTranscript> {
+  const provider = getTranscriptionProvider();
+  logger.info(`Transcription provider: ${provider}`);
+
+  if (provider === 'local') {
+    const localOptions: LocalTranscriberOptions = {
+      language: options.language || 'es',
+      model: process.env.LOCAL_WHISPER_MODEL || 'medium',
+      device: process.env.LOCAL_WHISPER_DEVICE || 'cpu',
+      minSpeakers: process.env.LOCAL_MIN_SPEAKERS
+        ? parseInt(process.env.LOCAL_MIN_SPEAKERS, 10)
+        : undefined,
+      maxSpeakers: process.env.LOCAL_MAX_SPEAKERS
+        ? parseInt(process.env.LOCAL_MAX_SPEAKERS, 10)
+        : undefined,
+    };
+
+    return transcribeLocal(audioPath, localOptions, progressCtx);
+  }
+
+  // ElevenLabs cloud flow
+  const jobId = await submitToScribe(audioPath, options);
+
+  // Poll until complete
+  let status = await pollScribeStatus(jobId);
+  while (status.status === 'queued' || status.status === 'processing') {
+    const waitMs = status.status === 'queued' ? 5000 : 10000;
+    logger.info(`Scribe job ${jobId}: ${status.status} (${status.progress ?? '?'}%), waiting ${waitMs / 1000}s...`);
+    await new Promise((r) => setTimeout(r, waitMs));
+    status = await pollScribeStatus(jobId);
+  }
+
+  if (status.status === 'failed') {
+    throw new Error(`Scribe transcription failed for job: ${jobId}`);
+  }
+
+  return fetchScribeResult(jobId);
+}
+
+// ══════════════════════════════════════════════
+// ElevenLabs Scribe API Functions (unchanged)
+// ══════════════════════════════════════════════
 
 const SCRIBE_BASE_URL = 'https://api.elevenlabs.io/v1';
 

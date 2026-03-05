@@ -38,7 +38,11 @@ function createStages(): StageStatus[] {
   }));
 }
 
-export async function initPipeline(eventId: EventId, _eventFolder: EventFolder): Promise<PipelineJob> {
+export async function initPipeline(
+  eventId: EventId,
+  _eventFolder: EventFolder,
+  opts?: { idAsamblea?: number; clientName?: string },
+): Promise<PipelineJob> {
   const jobId = randomUUID();
   const now = new Date().toISOString();
 
@@ -49,10 +53,13 @@ export async function initPipeline(eventId: EventId, _eventFolder: EventFolder):
     stages: createStages(),
     createdAt: now,
     updatedAt: now,
+    ...(opts?.idAsamblea != null && { idAsamblea: opts.idAsamblea }),
+    ...(opts?.clientName != null && { clientName: opts.clientName }),
   };
 
   await stateManager.saveState(jobId, job);
-  logger.info(`Pipeline initialized: ${jobId} for event ${eventId}`);
+  logger.info(`Pipeline initialized: ${jobId} for event ${eventId}` +
+    (opts?.idAsamblea ? ` (idAsamblea=${opts.idAsamblea}, client=${opts.clientName})` : ' (no assembly resolved)'));
   return job;
 }
 

@@ -126,7 +126,17 @@ export default function ConfigPanel({ node, onClose, onSwitchToChat }: Props) {
       background: '#1e293b',
       borderLeft: `3px solid ${node.color}`,
       overflow: 'hidden',
-    }}>
+      userSelect: 'text',
+      WebkitUserSelect: 'text',
+    }}
+    onPointerDownCapture={(e) => e.stopPropagation()}
+    onMouseDownCapture={(e) => e.stopPropagation()}
+    onKeyDownCapture={(e) => {
+      // Allow all keyboard shortcuts (Cmd+C, Cmd+V, Cmd+X, Cmd+A) inside the panel
+      e.stopPropagation();
+    }}
+    onContextMenu={(e) => e.stopPropagation()}
+    >
       {/* Header */}
       <div style={{
         display: 'flex',
@@ -364,6 +374,8 @@ const inputStyle: React.CSSProperties = {
   fontFamily: 'monospace',
   outline: 'none',
   boxSizing: 'border-box',
+  userSelect: 'text',
+  WebkitUserSelect: 'text',
 };
 
 const headerBtnStyle: React.CSSProperties = {

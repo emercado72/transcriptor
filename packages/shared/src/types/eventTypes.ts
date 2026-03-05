@@ -38,6 +38,17 @@ export interface EventFolder {
   path: string;
 }
 
+export interface RosterRecord {
+  tower: string;
+  unit: string;
+  ownerName: string;
+  ownerName2: string;
+  delegateName: string;
+  coefficient: number;
+  nominal: number;
+  hasMora: boolean;
+}
+
 export interface ClientConfig {
   buildingName: string;
   nit: string;

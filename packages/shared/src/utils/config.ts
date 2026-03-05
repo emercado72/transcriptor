@@ -21,6 +21,8 @@ export function getEnvConfig(): EnvConfig {
     openaiApiKey: process.env.OPENAI_API_KEY || '',
     groqApiKey: process.env.GROQ_API_KEY || '',
     groqModel: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
+    openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
+    openrouterModel: process.env.OPENROUTER_MODEL || 'anthropic/claude-sonnet-4',
     elevenLabsApiKey: process.env.ELEVENLABS_API_KEY || '',
     googleClientId: process.env.GOOGLE_CLIENT_ID || '',
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || '',

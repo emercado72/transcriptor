@@ -1,4 +1,5 @@
 export * from './robinsonService.js';
+export type { RosterRecord } from '@transcriptor/shared';
 export {
   callService,
   adminLogin,
@@ -17,6 +18,7 @@ export {
   mapAttendance,
   mapVotingResults,
   mapVotingDetail,
+  mapVotingDetailFromResultsData,
   mapQuorum,
   mapQuorumSnapshot,
 } from './adapters/tecnoreunionesAdapter.js';
@@ -33,5 +35,7 @@ export {
   dbFetchLastAnsweredQuestion,
   dbListTables,
   dbDescribeTable,
+  dbResolveAssembly,
+  dbFetchRoster,
   closePool,
 } from './adapters/tecnoreunionesDb.js';

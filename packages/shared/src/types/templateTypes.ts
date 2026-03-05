@@ -35,6 +35,8 @@ export interface EnvConfig {
   openaiApiKey: string;
   groqApiKey: string;
   groqModel: string;
+  openrouterApiKey: string;
+  openrouterModel: string;
   elevenLabsApiKey: string;
   googleClientId: string;
   googleClientSecret: string;

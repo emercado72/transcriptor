@@ -16,6 +16,7 @@ export {
   gwDriveSearch,
   gwDriveGetFile,
   gwDriveCreateFolder,
+  gwDriveDownloadFile,
   gwDocsGetContent,
   gwDocsCreate,
   gwDocsAppend,
@@ -34,3 +35,12 @@ export {
   type GWEmail,
 } from './googleWorkspace.js';
 export { getRedisClient, closeRedis } from './redis.js';
+export {
+  publishEvent,
+  publishSuccess,
+  publishFailure,
+  popEvent,
+  getQueueLength,
+  type PipelineEvent,
+  type PipelineEventType,
+} from './pipelineEvents.js';

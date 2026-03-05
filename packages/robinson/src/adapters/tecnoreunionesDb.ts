@@ -114,23 +114,23 @@ export async function dbFetchVotingResults(
   if (opciones <= 1) {
     // Single-choice: from respuestas table
     return queryTecnoreuniones(
-      'SELECT r.respuesta AS texto, COUNT(*) AS conteo, COUNT(*) AS nominal, ' +
+      'SELECT r.texto, COUNT(*) AS conteo, COUNT(*) AS nominal, ' +
       'ROUND(SUM(res.coeficiente), 4) AS coeficiente ' +
       'FROM respuestas r ' +
       'JOIN residentes res ON r.idAsamblea = res.idAsamblea AND r.idTorre = res.idtorre AND r.idUnidad = res.idunidad ' +
       'WHERE r.idAsamblea = ? AND r.idPregunta = ? ' +
-      'GROUP BY r.respuesta ORDER BY conteo DESC',
+      'GROUP BY r.texto ORDER BY conteo DESC',
       [idAsamblea, idPregunta],
     );
   } else {
     // Multi-choice: from respuestasmultiples table
     return queryTecnoreuniones(
-      'SELECT r.respuesta AS texto, COUNT(*) AS conteo, COUNT(*) AS nominal, ' +
+      'SELECT r.texto, COUNT(*) AS conteo, COUNT(*) AS nominal, ' +
       'ROUND(SUM(res.coeficiente), 4) AS coeficiente ' +
       'FROM respuestasmultiples r ' +
       'JOIN residentes res ON r.idAsamblea = res.idAsamblea AND r.idTorre = res.idtorre AND r.idUnidad = res.idunidad ' +
       'WHERE r.idAsamblea = ? AND r.idPregunta = ? ' +
-      'GROUP BY r.respuesta ORDER BY conteo DESC',
+      'GROUP BY r.texto ORDER BY conteo DESC',
       [idAsamblea, idPregunta],
     );
   }
@@ -211,6 +211,92 @@ export async function dbDescribeTable(tableName: string): Promise<Record<string,
   // Sanitize table name to prevent injection
   const safeName = tableName.replace(/[^a-zA-Z0-9_]/g, '');
   return queryTecnoreuniones(`DESCRIBE ${safeName}`);
+}
+
+/**
+ * Resolve an assembly by matching a text hint against the `cliente` column.
+ * Strips common prefixes ("Audio Asamblea", date suffixes) and fuzzy-matches.
+ * Returns the best match or null if ambiguous/not found.
+ */
+export async function dbResolveAssembly(
+  hint: string,
+): Promise<{ idAsamblea: number; cliente: string } | null> {
+  // Clean the hint: strip "Audio Asamblea", dates like "01032026", file extensions
+  let cleaned = hint
+    .replace(/\.(mp3|wav|flac|m4a|ogg|aac|mp4|wma)$/i, '')
+    .replace(/^Audio\s+Asamblea\s+/i, '')
+    .replace(/\s*-?\s*\d{6,8}\s*$/, '')  // trailing date like 01032026
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!cleaned || cleaned.length < 3) return null;
+
+  // Build search tokens: split on spaces, take words ≥3 chars
+  const tokens = cleaned
+    .split(/\s+/)
+    .filter(t => t.length >= 3)
+    .map(t => t.replace(/[^a-zA-ZáéíóúñÁÉÍÓÚÑ]/g, ''));
+
+  if (tokens.length === 0) return null;
+
+  // Search by LIKE with the full cleaned phrase first
+  const likePattern = `%${cleaned}%`;
+  let rows = await queryTecnoreuniones(
+    'SELECT idAsamblea, cliente FROM asambleas WHERE cliente LIKE ? ORDER BY idAsamblea DESC LIMIT 10',
+    [likePattern],
+  );
+
+  // If no results, try individual tokens combined
+  if (rows.length === 0 && tokens.length > 1) {
+    // Try with just the most distinctive token (longest word)
+    const longestToken = tokens.sort((a, b) => b.length - a.length)[0];
+    rows = await queryTecnoreuniones(
+      'SELECT idAsamblea, cliente FROM asambleas WHERE cliente LIKE ? ORDER BY idAsamblea DESC LIMIT 10',
+      [`%${longestToken}%`],
+    );
+  }
+
+  if (rows.length === 0) return null;
+
+  if (rows.length === 1) {
+    return {
+      idAsamblea: Number(rows[0].idAsamblea),
+      cliente: String(rows[0].cliente),
+    };
+  }
+
+  // Multiple matches: score by how many tokens appear in the client name
+  const scored = rows.map(r => {
+    const clienteLower = String(r.cliente).toLowerCase();
+    const score = tokens.filter(t => clienteLower.includes(t.toLowerCase())).length;
+    return { idAsamblea: Number(r.idAsamblea), cliente: String(r.cliente), score };
+  });
+
+  scored.sort((a, b) => b.score - a.score || b.idAsamblea - a.idAsamblea);
+
+  // If the top scorer is clearly better, use it; otherwise pick the most recent
+  if (scored[0].score > scored[1].score) {
+    return { idAsamblea: scored[0].idAsamblea, cliente: scored[0].cliente };
+  }
+
+  // Tie — pick the most recent (highest idAsamblea)
+  logger.info(`Assembly resolution ambiguous for "${hint}", picking most recent: ${scored[0].idAsamblea}`);
+  return { idAsamblea: scored[0].idAsamblea, cliente: scored[0].cliente };
+}
+
+/**
+ * Fetch the resident roster for an assembly.
+ * Returns all residents with tower, unit, owner names, and coefficient.
+ */
+export async function dbFetchRoster(
+  idAsamblea: number,
+): Promise<Record<string, unknown>[]> {
+  return queryTecnoreuniones(
+    'SELECT idtorre, idunidad, nombrePropietario1, nombrePropietario2, ' +
+    'nombreApoderado, coeficiente, nominal, mora ' +
+    'FROM residentes WHERE idAsamblea = ? ORDER BY idtorre, idunidad',
+    [idAsamblea],
+  );
 }
 
 /**

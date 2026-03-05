@@ -11,7 +11,11 @@
     "typecheck": "pnpm -r typecheck",
     "db:migrate": "pnpm --filter @transcriptor/shared db:migrate",
     "db:seed": "pnpm --filter @transcriptor/shared db:seed",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "gloria": "npx tsc -p packages/shared/tsconfig.json && npx tsc -p packages/chucho/tsconfig.json && npx tsc -p packages/gloria/tsconfig.json && pkill -f 'node.*reviewServer' 2>/dev/null; sleep 1 && node --env-file=.env.local packages/gloria/dist/reviewServer.js",
+    "gloria:restart": "pkill -f 'node.*reviewServer' 2>/dev/null; sleep 1; nohup node --env-file=.env.local packages/gloria/dist/reviewServer.js > /tmp/gloria.log 2>&1 &",
+    "gloria:build": "npx tsc -p packages/shared/tsconfig.json && npx tsc -p packages/chucho/tsconfig.json && npx tsc -p packages/supervisor/tsconfig.json && npx tsc -p packages/robinson/tsconfig.json && npx tsc -p packages/gloria/tsconfig.json",
+    "gloria:br": "pnpm gloria:build && pnpm gloria:restart"
   },
   "engines": {
     "node": ">=20.0.0",

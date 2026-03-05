@@ -1,5 +1,6 @@
 import ffmpeg from 'fluent-ffmpeg';
 import path from 'node:path';
+import { readdirSync } from 'node:fs';
 import { createLogger } from '@transcriptor/shared';
 
 const logger = createLogger('chucho');
@@ -49,6 +50,7 @@ export function convertToMono(inputPath: string, outputPath: string): Promise<vo
   return new Promise((resolve, reject) => {
     ffmpeg(inputPath)
       .audioChannels(1)
+      .audioFrequency(16000)
       .output(outputPath)
       .on('end', () => {
         logger.info('Mono conversion complete');
@@ -117,7 +119,6 @@ export function splitAtSilence(
       .output(outputPattern)
       .on('end', () => {
         // List the generated files
-        const { readdirSync } = require('node:fs');
         const files = readdirSync(outputDir)
           .filter((f: string) => f.startsWith(`${baseName}_part`) && f.endsWith('.flac'))
           .map((f: string) => path.join(outputDir, f))

@@ -30,6 +30,8 @@ export function getEdges(): AgentEdge[] {
     { from: 'yulieth',    to: 'chucho',     label: 'audio files' },
     { from: 'yulieth',    to: 'robinson',   label: 'event detected' },
     { from: 'robinson',   to: 'jaime',      label: 'voting + attendance data' },
+    { from: 'robinson',   to: 'lina',       label: 'roster for diarization' },
+    { from: 'robinson',   to: 'fannery',    label: 'voting details + quorum' },
     { from: 'chucho',     to: 'jaime',      label: 'preprocessed audio' },
     { from: 'jaime',      to: 'lina',       label: 'sections + transcript' },
     { from: 'lina',       to: 'fannery',    label: 'redacted sections' },

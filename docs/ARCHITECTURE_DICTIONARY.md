@@ -284,3 +284,62 @@
 | loadGlossary(clientId) | string | GlossaryEntry[] | Loads client-specific term dictionary |
 | loadDefaultGlossary() | none | GlossaryEntry[] | Loads default Colombian PH terms |
 | getEnvConfig() | none | EnvConfig | Reads environment variables |
+
+---
+
+## Jaime - Local Transcription Adapter (packages/jaime/src/localTranscriber.ts)
+
+### Overview
+Alternative transcription backend that uses the local `audio-transcriber` project
+(Faster-Whisper + Pyannote) instead of the ElevenLabs Scribe cloud API.
+Produces the same `ScribeTranscript` output format so downstream agents are unaffected.
+
+### Configuration (in .env.local)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| TRANSCRIPTION_PROVIDER | auto | "local" for Whisper+Pyannote, "elevenlabs" for cloud. Auto-detects if unset. |
+| AUDIO_TRANSCRIBER_PATH | ../audio-transcriber | Path to audio-transcriber project |
+| PYTHON_COMMAND | python3 | Python executable to use |
+| LOCAL_WHISPER_MODEL | medium | Whisper model size (tiny, base, small, medium, large-v3) |
+| LOCAL_WHISPER_DEVICE | cpu | cpu or cuda |
+| LOCAL_MIN_SPEAKERS | (none) | Minimum expected speakers for Pyannote |
+| LOCAL_MAX_SPEAKERS | (none) | Maximum expected speakers for Pyannote |
+| HF_TOKEN | (none) | Hugging Face token for Pyannote model access |
+
+### localTranscriber.ts
+| Function | Input | Output | Description |
+|----------|-------|--------|-------------|
+| transcribeLocal(audioPath, options) | string, LocalTranscriberOptions | ScribeTranscript | Runs audio-transcriber as subprocess and maps output |
+| getAudioTranscriberPath() | none | string | Resolves path to audio-transcriber project |
+| getPythonCommand() | none | string | Returns python command from env |
+| runPythonProcess(command, args) | string, string[] | void | Spawns and monitors the Python subprocess |
+| mapToScribeTranscript(result, audioPath) | AudioTranscriberOutput, string | ScribeTranscript | Maps JSON output to Jaime's expected types |
+
+### transcriptionManager.ts (updated)
+| Function | Input | Output | Description |
+|----------|-------|--------|-------------|
+| getTranscriptionProvider() | none | TranscriptionProvider | Detects which backend to use from env config |
+| transcribeAudio(audioPath, options) | string, ScribeOptions | ScribeTranscript | **NEW** unified entry point — routes to local or cloud |
+| submitToScribe(audioPath, options) | string, ScribeOptions | ScribeJobId | ElevenLabs cloud: submits audio |
+| pollScribeStatus(scribeJobId) | string | ScribeStatus | ElevenLabs cloud: checks job status |
+| fetchScribeResult(scribeJobId) | string | ScribeTranscript | ElevenLabs cloud: downloads result |
+
+### Data Flow
+```
+Chucho output (FLAC) → Jaime transcriptionManager.transcribeAudio()
+                             │
+                    ┌────────┴────────┐
+                    │                 │
+              PROVIDER=local    PROVIDER=elevenlabs
+                    │                 │
+          localTranscriber.ts   ElevenLabs Scribe API
+          (Python subprocess)   (cloud HTTP)
+                    │                 │
+                    └────────┬────────┘
+                             │
+                     ScribeTranscript
+                     (same format)
+                             │
+                    sectionMapper.ts
+                    (unchanged)
+```

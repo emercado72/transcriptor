@@ -1,12 +1,25 @@
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import cors from 'cors';
 import { sql } from 'drizzle-orm';
 import OpenAI from 'openai';
-import { createLogger, getEnvConfig, getDb, gwDriveListFiles } from '@transcriptor/shared';
-import type { JobId, SectionId } from '@transcriptor/shared';
+import { createLogger, getEnvConfig, getDb, gwDriveListFiles, getRedisClient, EventStatus } from '@transcriptor/shared';
+import type { JobId, SectionId, EventFolder, ReviewItemStatus } from '@transcriptor/shared';
 import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions.js';
+import {
+  analyzeDocument,
+  getReviewSession,
+  updateItemStatus,
+  applyFix,
+  restoreReviewSessions,
+  loadTranscriptSegments,
+  getAudioFileMap,
+  saveDocument,
+  exportDocument,
+  getAllReviewSessions,
+} from './reviewService.js';
 
 const logger = createLogger('gloria');
 
@@ -42,7 +55,7 @@ export function startServer(port?: number): void {
   const serverPort = port || env.gloriaPort || 3001;
 
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: '5mb' }));
 
   // ── Routes ──
 
@@ -173,6 +186,7 @@ export function startServer(port?: number): void {
     if (body.autoQueue !== undefined) yuliethConfig.autoQueue = Boolean(body.autoQueue);
     if (body.audioExtensions !== undefined) yuliethConfig.audioExtensions = body.audioExtensions;
     if (body.votingExtensions !== undefined) yuliethConfig.votingExtensions = body.votingExtensions;
+    saveYuliethConfig();
     logger.info('Yulieth config updated', yuliethConfig);
     res.json({ config: yuliethConfig });
   });
@@ -235,6 +249,805 @@ export function startServer(port?: number): void {
     }
   });
 
+  // ── Pipeline Job Endpoints ──
+
+  // Get pipeline status for a specific job
+  app.get('/api/pipeline/:jobId', async (req, res) => {
+    try {
+      const supervisor = await import('@transcriptor/supervisor');
+      const status = await supervisor.getPipelineStatus(req.params.jobId);
+      if (!status) {
+        return res.status(404).json({ error: 'Pipeline job not found' });
+      }
+      res.json(status);
+    } catch (err) {
+      logger.error('Pipeline status error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // List all active pipelines
+  app.get('/api/pipelines', async (_req, res) => {
+    try {
+      const supervisor = await import('@transcriptor/supervisor');
+      const pipelines = await supervisor.getActivePipelines();
+      res.json(pipelines);
+    } catch (err) {
+      logger.error('Pipelines list error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Retry a failed pipeline stage via Supervisor's event bus
+  app.post('/api/pipeline/:jobId/retry', async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const { stage } = req.body; // e.g. 'preprocessing', 'transcribing'
+      const { publishEvent } = await import('@transcriptor/shared');
+      const supervisor = await import('@transcriptor/supervisor');
+
+      // Verify pipeline exists
+      const status = await supervisor.getPipelineStatus(jobId);
+      if (!status) {
+        return res.status(404).json({ error: 'Pipeline job not found' });
+      }
+
+      if (!stage) {
+        return res.status(400).json({ error: 'stage is required (e.g. preprocessing, transcribing)' });
+      }
+
+      logger.info(`Manual retry requested for job ${jobId}, stage ${stage}`);
+
+      // Publish retry event — Supervisor will handle it
+      await publishEvent({
+        type: 'job_retry',
+        jobId,
+        agent: 'gloria',
+        timestamp: new Date().toISOString(),
+        data: { stage },
+      });
+
+      res.json({ success: true, jobId, stage, message: `Retry for ${stage} queued to Supervisor` });
+    } catch (err) {
+      logger.error('Retry error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Supervisor Kanban Endpoint ──
+  app.get('/api/supervisor/kanban', async (_req, res) => {
+    try {
+      const supervisor = await import('@transcriptor/supervisor');
+      const kanban = await supervisor.getKanbanBoard();
+      res.json(kanban);
+    } catch (err) {
+      logger.error('Kanban fetch error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Chucho Queue Endpoint ──
+  app.get('/api/agents/chucho/queue', (_req, res) => {
+    try {
+      const jobs = getAllChuchoProgress();
+      res.json({ jobs });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Jaime Queue Endpoint ──
+  app.get('/api/agents/jaime/queue', async (_req, res) => {
+    try {
+      const jaime = await import('@transcriptor/jaime');
+      const jobs = await jaime.getAllJobProgress();
+      res.json({ jobs });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Lina Queue Endpoint ──
+  app.get('/api/agents/lina/queue', async (_req, res) => {
+    try {
+      const lina = await import('@transcriptor/lina');
+      const jobs = lina.getAllLinaProgress();
+      res.json({ jobs });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Lina Reprocess Endpoint ──
+  app.post('/api/agents/lina/reprocess/:jobId', async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const lina = await import('@transcriptor/lina');
+      const { publishSuccess, publishFailure } = await import('@transcriptor/shared');
+
+      const progress = lina.getAllLinaProgress().find(j => j.jobId === jobId);
+      if (!progress) {
+        return res.status(404).json({ error: 'Job not found in Lina queue' });
+      }
+
+      logger.info(`Reprocessing Lina job ${jobId} (previous status: ${progress.status})`);
+
+      // Reset pipeline state to REDACTING so supervisor reports accurately
+      try {
+        const supervisor = await import('@transcriptor/supervisor');
+        const { EventStatus } = await import('@transcriptor/shared');
+        await supervisor.advanceStage(jobId, EventStatus.REDACTING);
+        logger.info(`Pipeline ${jobId} reset to REDACTING for reprocess`);
+      } catch (stateErr) {
+        logger.warn(`Could not reset pipeline state for ${jobId}: ${(stateErr as Error).message}`);
+      }
+
+      res.json({ ok: true, message: `Reprocessing job ${jobId}` });
+
+      // Run redaction asynchronously so the HTTP response is immediate
+      setImmediate(async () => {
+        try {
+          const result = await lina.processJob(jobId);
+          logger.info(
+            `Lina reprocess done for ${jobId}: ${result.sectionsRedacted} sections redacted, ` +
+            `${result.reconciliation.globalSpeakers.length} speakers reconciled`,
+          );
+          await publishSuccess('redaction_done', jobId, 'lina', {
+            sectionsRedacted: result.sectionsRedacted,
+            globalSpeakers: result.reconciliation.globalSpeakers.length,
+            identifiedSpeakers: Object.keys(result.reconciliation.identifiedSpeakers).length,
+            confidence: result.reconciliation.confidence,
+            validationErrors: result.validationErrors.length,
+            validationWarnings: result.validationWarnings.length,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error(`Lina reprocess failed for ${jobId}: ${msg}`);
+          lina.markLinaFailed(jobId, msg);
+          await publishFailure('redaction_failed', jobId, 'lina', msg);
+        }
+      });
+    } catch (err) {
+      logger.error('Lina reprocess error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+
+  // ── Jaime Resection Endpoint — re-runs LLM segmentation on existing transcript ──
+  app.post('/api/agents/jaime/resection/:jobId', async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const fsSync = await import('node:fs');
+      const fsAsync = await import('node:fs/promises');
+      const nodePath = await import('node:path');
+      const { getEnvConfig } = await import('@transcriptor/shared');
+
+      const env = getEnvConfig();
+      const projectRoot = nodePath.default.resolve(import.meta.dirname, '../../..');
+      const dataDir = nodePath.default.join(projectRoot, 'data', 'jobs');
+      const base = nodePath.default.join(dataDir, jobId);
+      const transcriptPath = nodePath.default.join(base, 'transcript/transcript.json');
+      const sectionsDir = nodePath.default.join(base, 'sections');
+
+      if (!fsSync.existsSync(transcriptPath)) {
+        return res.status(404).json({ error: `transcript.json not found for job ${jobId}` });
+      }
+
+      res.json({ ok: true, message: `Resectioning job ${jobId} with LLM segmenter` });
+
+      setImmediate(async () => {
+        try {
+          logger.info(`Resectioning ${jobId}: loading transcript`);
+          const raw = await fsAsync.default.readFile(transcriptPath, 'utf-8');
+          const transcript = JSON.parse(raw);
+
+          let questionList: any[] = [];
+          try {
+            const mRaw = await fsAsync.default.readFile(nodePath.default.join(base, 'processed/manifest.json'), 'utf-8');
+            questionList = JSON.parse(mRaw).questionList || [];
+          } catch { /* no questions */ }
+
+          logger.info(`Resectioning ${jobId}: ${transcript.utterances.length} utterances, ${questionList.length} questions`);
+
+          const jaime = await import('@transcriptor/jaime');
+          const sections = await jaime.mapTranscriptToSections(transcript, questionList);
+
+          // Clear old sections
+          await fsAsync.default.mkdir(sectionsDir, { recursive: true });
+          const oldFiles = await fsAsync.default.readdir(sectionsDir);
+          for (const f of oldFiles) {
+            await fsAsync.default.unlink(nodePath.default.join(sectionsDir, f));
+          }
+
+          // Write new sections
+          for (const section of sections as any[]) {
+            await fsAsync.default.writeFile(
+              nodePath.default.join(sectionsDir, `${section.sectionId}.json`),
+              JSON.stringify(section, null, 2)
+            );
+          }
+
+          logger.info(`Resectioning ${jobId} complete: ${(sections as any[]).length} sections written`);
+
+          // Reset pipeline state to sectioning complete so Lina can pick it up
+          const supervisor = await import('@transcriptor/supervisor');
+          const { EventStatus, publishSuccess } = await import('@transcriptor/shared');
+          await supervisor.advanceStage(jobId, EventStatus.SECTIONING);
+          await supervisor.markStageComplete(jobId, EventStatus.SECTIONING);
+          logger.info(`Pipeline ${jobId} advanced to SECTIONING complete`);
+
+          // Now trigger Lina
+          await supervisor.advanceStage(jobId, EventStatus.REDACTING);
+          await publishSuccess('transcription_done', jobId, 'jaime', {
+            sectionCount: (sections as any[]).length,
+          });
+          logger.info(`Published transcription_done for ${jobId} — Lina should pick it up`);
+        } catch (err) {
+          logger.error(`Resectioning ${jobId} failed: ${(err as Error).message}`);
+        }
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Gloria Queue Endpoint ──
+  app.get('/api/agents/gloria/queue', async (_req, res) => {
+    try {
+      const sessions = getAllReviewSessions();
+      // Enrich each session with clientName from the pipeline state
+      const supervisor = await import('@transcriptor/supervisor');
+      const jobs = await Promise.all(sessions.map(async (s) => {
+        let clientName: string | undefined;
+        try {
+          const pipelineJob = await supervisor.loadState(s.jobId);
+          clientName = pipelineJob?.clientName;
+        } catch { /* not critical */ }
+        return {
+          jobId: s.jobId,
+          clientName,
+          status: s.status,
+          startedAt: s.startedAt,
+          completedAt: s.completedAt,
+          error: s.error,
+          stats: s.stats,
+          itemCount: s.items.length,
+        };
+      }));
+      res.json({ jobs });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Fannery Queue Endpoint ──
+  app.get('/api/agents/fannery/queue', async (_req, res) => {
+    try {
+      const fannery = await import('@transcriptor/fannery');
+      const jobs = fannery.getAllFanneryProgress();
+      res.json({ jobs });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Fannery Document Download Endpoint ──
+  app.get('/api/agents/fannery/download/:jobId', async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const fannery = await import('@transcriptor/fannery');
+      const progress = fannery.getAllFanneryProgress().find(j => j.jobId === jobId);
+
+      if (!progress) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+      if (progress.status !== 'completed' || !progress.assembly?.outputPath) {
+        return res.status(400).json({ error: 'Document not available yet' });
+      }
+
+      const filePath = progress.assembly.outputPath;
+      const fs = await import('fs');
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: 'Document file not found on disk' });
+      }
+
+      const fileName = path.basename(filePath);
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+      fs.createReadStream(filePath).pipe(res);
+    } catch (err) {
+      logger.error('Fannery download error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+  // Lina Section Preview Endpoint
+  app.get("/api/agents/lina/preview/:jobId", async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const path2 = await import("path");
+      const fs2 = await import("fs");
+      const redactedDir = path2.default.join(process.cwd(), "data", "jobs", jobId, "redacted");
+      if (!fs2.default.existsSync(redactedDir)) return res.status(404).json({ error: "No redacted sections found" });
+      const files = fs2.default.readdirSync(redactedDir).filter((f) => f.endsWith(".json") && f !== "manifest.json").sort();
+      if (files.length === 0) return res.status(400).json({ error: "No sections redacted yet" });
+      const sections = [];
+      for (const file of files) {
+        try {
+          const raw = JSON.parse(fs2.default.readFileSync(path2.default.join(redactedDir, file), "utf-8"));
+          const title = raw.sectionTitle || raw.sectionId || file.replace(".json", "");
+          const text = (raw.content || []).map((b) => b.text || "").filter(Boolean).join("\n\n");
+          sections.push("## " + title + "\n\n" + text);
+        } catch {}
+      }
+      res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+      res.send(sections.join("\n\n---\n\n"));
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+
+  // ── Fannery Markdown Preview Endpoint ──
+  app.get('/api/agents/fannery/preview/:jobId', async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const fannery = await import('@transcriptor/fannery');
+      const progress = fannery.getAllFanneryProgress().find(j => j.jobId === jobId);
+
+      if (!progress) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+      if (progress.status !== 'completed' || !progress.assembly?.markdownPath) {
+        return res.status(400).json({ error: 'Markdown preview not available yet' });
+      }
+
+      const mdPath = progress.assembly.markdownPath;
+      const fs2 = await import('fs');
+      if (!fs2.existsSync(mdPath)) {
+        return res.status(404).json({ error: 'Markdown file not found on disk' });
+      }
+
+      const content = fs2.readFileSync(mdPath, 'utf-8');
+      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+      res.send(content);
+    } catch (err) {
+      logger.error('Fannery preview error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Fannery PDF Download Endpoint ──
+  app.get('/api/agents/fannery/pdf/:jobId', async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const fannery = await import('@transcriptor/fannery');
+      const progress = fannery.getAllFanneryProgress().find(j => j.jobId === jobId);
+
+      if (!progress) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+      if (progress.status !== 'completed' || !progress.assembly?.pdfPath) {
+        // Fallback: try to generate PDF on the fly from markdown
+        if (progress.status === 'completed' && progress.assembly?.markdownPath) {
+          const fs2 = await import('fs');
+          if (fs2.existsSync(progress.assembly.markdownPath)) {
+            const markdown = fs2.readFileSync(progress.assembly.markdownPath, 'utf-8');
+            const pdfBuffer = await fannery.renderMarkdownAsPdf(markdown);
+            const fileName = path.basename(progress.assembly.markdownPath).replace('.md', '.pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+            res.setHeader('Content-Type', 'application/pdf');
+            res.send(Buffer.from(pdfBuffer));
+            return;
+          }
+        }
+        return res.status(400).json({ error: 'PDF not available yet' });
+      }
+
+      const pdfPath = progress.assembly.pdfPath;
+      const fs2 = await import('fs');
+      if (!fs2.existsSync(pdfPath)) {
+        return res.status(404).json({ error: 'PDF file not found on disk' });
+      }
+
+      const fileName = path.basename(pdfPath);
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+      res.setHeader('Content-Type', 'application/pdf');
+      fs2.createReadStream(pdfPath).pipe(res);
+    } catch (err) {
+      logger.error('Fannery PDF download error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Fannery Reprocess Endpoint ──
+  app.post('/api/agents/fannery/reprocess/:jobId', async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const fannery = await import('@transcriptor/fannery');
+      const { publishSuccess, publishFailure } = await import('@transcriptor/shared');
+
+      const progress = fannery.getAllFanneryProgress().find(j => j.jobId === jobId);
+      if (!progress) {
+        return res.status(404).json({ error: 'Job not found in Fannery queue' });
+      }
+
+      logger.info(`Reprocessing Fannery job ${jobId} (previous status: ${progress.status})`);
+
+      // Reset pipeline state to ASSEMBLING so supervisor reports accurately
+      try {
+        const supervisor = await import('@transcriptor/supervisor');
+        const { EventStatus } = await import('@transcriptor/shared');
+        await supervisor.advanceStage(jobId, EventStatus.ASSEMBLING);
+        logger.info(`Pipeline ${jobId} reset to ASSEMBLING for reprocess`);
+      } catch (stateErr) {
+        logger.warn(`Could not reset pipeline state for ${jobId}: ${(stateErr as Error).message}`);
+      }
+
+      res.json({ ok: true, message: `Reprocessing job ${jobId}` });
+
+      // Run assembly asynchronously so the HTTP response is immediate
+      setImmediate(async () => {
+        try {
+          const result = await fannery.processJob(jobId);
+          logger.info(
+            `Fannery reprocess done for ${jobId}: ${result.sectionsAssembled} sections, ` +
+            `${result.documentSizeBytes} bytes`,
+          );
+          await publishSuccess('assembly_done', jobId, 'fannery', {
+            sectionsAssembled: result.sectionsAssembled,
+            documentSizeBytes: result.documentSizeBytes,
+            documentPath: result.documentPath,
+            driveFileId: result.driveFileId,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error(`Fannery reprocess failed for ${jobId}: ${msg}`);
+          fannery.markFanneryFailed(jobId, msg);
+          await publishFailure('assembly_failed', jobId, 'fannery', msg);
+        }
+      });
+    } catch (err) {
+      logger.error('Fannery reprocess error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ══════════════════════════════════════
+  //  GLORIA REVIEW ENDPOINTS
+  // ══════════════════════════════════════
+
+  // Start LLM review analysis for a job
+  app.post('/api/review/start/:jobId', async (req, res) => {
+    try {
+      const { jobId } = req.params;
+
+      // Check if a session already exists
+      const existing = getReviewSession(jobId);
+      if (existing && (existing.status === 'analyzing' || existing.status === 'ready' || existing.status === 'in_review')) {
+        return res.json({ session: existing });
+      }
+
+      // Load the markdown content from Fannery's output
+      const fannery = await import('@transcriptor/fannery');
+      const progress = fannery.getAllFanneryProgress().find(j => j.jobId === jobId);
+
+      let markdownContent: string;
+      if (progress?.assembly?.markdownPath && fs.existsSync(progress.assembly.markdownPath)) {
+        markdownContent = fs.readFileSync(progress.assembly.markdownPath, 'utf-8');
+      } else {
+        // Fallback: try to find markdown in output directory
+        const outputDir = path.join(process.cwd(), 'data', 'jobs', jobId, 'output');
+        if (!fs.existsSync(outputDir)) {
+          return res.status(404).json({ error: 'No assembled document found for this job' });
+        }
+        const mdFiles = fs.readdirSync(outputDir).filter(f => f.endsWith('.md')).sort();
+        if (mdFiles.length === 0) {
+          return res.status(404).json({ error: 'No markdown output found' });
+        }
+        markdownContent = fs.readFileSync(path.join(outputDir, mdFiles[mdFiles.length - 1]), 'utf-8');
+      }
+
+      logger.info(`Starting review for job ${jobId} (${markdownContent.length} chars)`);
+
+      // Start analysis asynchronously
+      res.json({ status: 'analyzing', jobId, message: 'Review analysis started' });
+
+      setImmediate(async () => {
+        try {
+          await analyzeDocument(jobId, markdownContent);
+        } catch (err) {
+          logger.error(`Review analysis failed for ${jobId}: ${(err as Error).message}`);
+        }
+      });
+    } catch (err) {
+      logger.error('Review start error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Get review session status and items
+  app.get('/api/review/:jobId', async (req, res) => {
+    try {
+      const session = getReviewSession(req.params.jobId);
+      if (!session) {
+        return res.status(404).json({ error: 'No review session found for this job' });
+      }
+      // Return session without full markdown content (too large for listing)
+      const { markdownContent: _mc, ...sessionMeta } = session;
+      res.json(sessionMeta);
+    } catch (err) {
+      logger.error('Review fetch error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Get review items (kanban data)
+  app.get('/api/review/:jobId/items', async (req, res) => {
+    try {
+      const session = getReviewSession(req.params.jobId);
+      if (!session) {
+        return res.status(404).json({ error: 'No review session found' });
+      }
+      res.json({ items: session.items, stats: session.stats });
+    } catch (err) {
+      logger.error('Review items error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Get review document (markdown for preview)
+  app.get('/api/review/:jobId/document', async (req, res) => {
+    try {
+      const session = getReviewSession(req.params.jobId);
+      if (!session) {
+        return res.status(404).json({ error: 'No review session found' });
+      }
+      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+      res.send(session.markdownContent);
+    } catch (err) {
+      logger.error('Review document error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Update review item status (move in kanban)
+  app.patch('/api/review/:jobId/items/:itemId/status', async (req, res) => {
+    try {
+      const { jobId, itemId } = req.params;
+      const { status } = req.body as { status: ReviewItemStatus };
+
+      if (!['pending', 'reviewing', 'fixed', 'dismissed'].includes(status)) {
+        return res.status(400).json({ error: 'Invalid status' });
+      }
+
+      const updated = updateItemStatus(jobId, itemId, status);
+      if (!updated) {
+        return res.status(404).json({ error: 'Item not found' });
+      }
+      res.json({ item: updated });
+    } catch (err) {
+      logger.error('Review status update error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Apply suggested fix (magic wand)
+  app.post('/api/review/:jobId/items/:itemId/apply', async (req, res) => {
+    try {
+      const { jobId, itemId } = req.params;
+      const result = await applyFix(jobId, itemId);
+      res.json(result);
+    } catch (err) {
+      logger.error('Review apply fix error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Save edited document (full markdown replacement)
+  app.put('/api/review/:jobId/document', async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const { markdown } = req.body as { markdown: string };
+      if (!markdown || typeof markdown !== 'string') {
+        return res.status(400).json({ error: 'Missing "markdown" in request body' });
+      }
+      const result = await saveDocument(jobId, markdown);
+      res.json(result);
+    } catch (err) {
+      logger.error('Save document error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Export document (re-render PDF from edited markdown)
+  app.post('/api/review/:jobId/export', async (req, res) => {
+    try {
+      const result = await exportDocument(req.params.jobId);
+      res.json(result);
+    } catch (err) {
+      logger.error('Export error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Download output file (docx, pdf, md)
+  app.get('/api/review/:jobId/download/:filename', async (req, res) => {
+    try {
+      const { jobId, filename } = req.params;
+      // Sanitize filename to prevent path traversal
+      const safeName = path.basename(filename);
+      const filePath = path.join(process.cwd(), 'data', 'jobs', jobId, 'output', safeName);
+
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: 'File not found' });
+      }
+
+      const ext = path.extname(safeName).toLowerCase();
+      const mimeMap: Record<string, string> = {
+        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        '.pdf': 'application/pdf',
+        '.md': 'text/markdown; charset=utf-8',
+      };
+
+      res.setHeader('Content-Type', mimeMap[ext] || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+      fs.createReadStream(filePath).pipe(res);
+    } catch (err) {
+      logger.error('Download error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // List available output files for download
+  app.get('/api/review/:jobId/files', async (req, res) => {
+    try {
+      const outputDir = path.join(process.cwd(), 'data', 'jobs', req.params.jobId, 'output');
+      if (!fs.existsSync(outputDir)) {
+        return res.json({ files: [] });
+      }
+      const files = fs.readdirSync(outputDir)
+        .filter(f => /\.(docx|pdf|md)$/i.test(f))
+        .map(f => ({
+          name: f,
+          ext: path.extname(f).toLowerCase().replace('.', ''),
+          size: fs.statSync(path.join(outputDir, f)).size,
+          url: `/api/review/${req.params.jobId}/download/${f}`,
+        }));
+      res.json({ files });
+    } catch (err) {
+      logger.error('Files list error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Serve audio segment for QC playback
+  app.get('/api/review/:jobId/audio/:segmentFile', async (req, res) => {
+    try {
+      const { jobId, segmentFile } = req.params;
+      const segDir = path.join(process.cwd(), 'data', 'jobs', jobId, 'processed');
+
+      if (!fs.existsSync(segDir)) {
+        return res.status(404).json({ error: 'No processed audio found' });
+      }
+
+      // Look for the segment file (flac/wav/mp3)
+      const baseName = segmentFile.replace(/\.\w+$/, '');
+      const candidates = fs.readdirSync(segDir).filter(f =>
+        f.startsWith(baseName) && /\.(flac|wav|mp3|ogg)$/i.test(f)
+      );
+
+      if (candidates.length === 0) {
+        return res.status(404).json({ error: 'Audio segment not found' });
+      }
+
+      const audioPath = path.join(segDir, candidates[0]);
+      const ext = path.extname(candidates[0]).toLowerCase();
+      const mimeMap: Record<string, string> = {
+        '.flac': 'audio/flac',
+        '.wav': 'audio/wav',
+        '.mp3': 'audio/mpeg',
+        '.ogg': 'audio/ogg',
+      };
+
+      res.setHeader('Content-Type', mimeMap[ext] || 'application/octet-stream');
+      fs.createReadStream(audioPath).pipe(res);
+    } catch (err) {
+      logger.error('Audio segment error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Get transcript segments for the document (used for section→audio mapping)
+  app.get('/api/review/:jobId/transcript-segments', async (req, res) => {
+    try {
+      const segments = loadTranscriptSegments(req.params.jobId);
+      const audioFiles = getAudioFileMap(req.params.jobId);
+      res.json({ segments, audioFiles });
+    } catch (err) {
+      logger.error('Transcript segments error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Serve audio file for playback with range-request support.
+  // ?part=0 selects a specific processed chunk (default: 0)
+  // Looks in raw/ first (mp3), then falls back to processed/ (flac chunks).
+  app.get('/api/review/:jobId/audio-playback', async (req, res) => {
+    try {
+      const jobId = req.params.jobId;
+      const partIdx = parseInt(String(req.query.part ?? '0'), 10);
+      const jobBase = path.join(process.cwd(), 'data', 'jobs', jobId);
+
+      // Try raw directory first (original mp3)
+      const rawDir = path.join(jobBase, 'raw');
+      let audioPath: string | null = null;
+
+      if (fs.existsSync(rawDir)) {
+        const rawFiles = fs.readdirSync(rawDir).filter(f =>
+          /\.(mp3|wav|ogg|m4a)$/i.test(f),
+        );
+        if (rawFiles.length > 0) {
+          audioPath = path.join(rawDir, rawFiles[0]);
+        }
+      }
+
+      // Fallback: processed directory (flac chunks)
+      if (!audioPath) {
+        const procDir = path.join(jobBase, 'processed');
+        if (!fs.existsSync(procDir)) {
+          return res.status(404).json({ error: 'No audio found' });
+        }
+        const procFiles = fs.readdirSync(procDir)
+          .filter(f => /\.(flac|wav|mp3|ogg)$/i.test(f))
+          .sort();
+        if (procFiles.length === 0) {
+          return res.status(404).json({ error: 'No audio files found' });
+        }
+        const idx = Math.min(partIdx, procFiles.length - 1);
+        audioPath = path.join(procDir, procFiles[idx]);
+      }
+
+      const stat = fs.statSync(audioPath);
+      const ext = path.extname(audioPath).toLowerCase();
+      const mimeMap: Record<string, string> = {
+        '.mp3': 'audio/mpeg',
+        '.wav': 'audio/wav',
+        '.ogg': 'audio/ogg',
+        '.m4a': 'audio/mp4',
+        '.flac': 'audio/flac',
+      };
+      const mime = mimeMap[ext] || 'application/octet-stream';
+
+      // Support HTTP Range requests for seeking
+      const range = req.headers.range;
+      if (range) {
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+        const chunkSize = end - start + 1;
+
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunkSize,
+          'Content-Type': mime,
+        });
+        fs.createReadStream(audioPath, { start, end }).pipe(res);
+      } else {
+        res.writeHead(200, {
+          'Content-Length': stat.size,
+          'Content-Type': mime,
+          'Accept-Ranges': 'bytes',
+        });
+        fs.createReadStream(audioPath).pipe(res);
+      }
+    } catch (err) {
+      logger.error('Audio playback error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // ── Serve dashboard static files ──
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const dashboardDist = path.resolve(__dirname, '../../dashboard/dist');
@@ -247,6 +1060,220 @@ export function startServer(port?: number): void {
   app.listen(serverPort, () => {
     logger.info(`Gloria review server running on http://localhost:${serverPort}`);
     logger.info(`Dashboard served from ${dashboardDist}`);
+
+    // ── Startup recovery: restore persisted state from Redis ──
+    void (async () => {
+      try {
+        // Restore Yulieth's detected folders
+        await restoreDetectedFolders();
+
+        // Restore Chucho's progress (and detect crashed jobs)
+        await restoreChuchoJobs();
+
+        // Restore Jaime's progress (and detect crashed jobs)
+        const jaime = await import('@transcriptor/jaime');
+        const crashedJobs = await jaime.recoverJobs();
+
+        // Restore Lina's progress
+        const lina = await import('@transcriptor/lina');
+        await lina.restoreLinaJobs();
+
+        // Restore Fannery's progress
+        const fannery = await import('@transcriptor/fannery');
+        await fannery.restoreFanneryJobs();
+
+        // ── Register agent dispatchers with Supervisor ──
+        const supervisor = await import('@transcriptor/supervisor');
+        const chucho = await import('@transcriptor/chucho');
+        const { publishSuccess, publishFailure } = await import('@transcriptor/shared');
+
+        // Report crashed Jaime jobs to supervisor
+        if (crashedJobs.length > 0) {
+          for (const job of crashedJobs) {
+            const completedSegs = job.segments.filter(s => s.status === 'completed').length;
+            const msg = `Transcription interrupted by restart (${completedSegs}/${job.totalSegments} segments completed). Needs retry.`;
+            try {
+              await supervisor.markStageFailed(job.jobId, EventStatus.TRANSCRIBING, msg);
+              logger.warn(`Reported crashed Jaime job ${job.jobId} to supervisor`);
+            } catch (err) {
+              logger.error(`Failed to report crash for ${job.jobId}: ${(err as Error).message}`);
+            }
+          }
+        }
+
+        // Chucho dispatcher: convert to mono 16kHz + split into 30-min chunks (no loudness normalization)
+        supervisor.registerDispatcher(EventStatus.PREPROCESSING, async (jobId: string) => {
+          logger.info(`Dispatcher: Chucho preprocessing for ${jobId} (mono + split 30min)`);
+          updateChuchoProgress(jobId, { status: 'preprocessing' });
+          try {
+            const chucho = await import('@transcriptor/chucho');
+            const result = await chucho.processJob(jobId);
+
+            if (result.errors.length > 0 && result.processedFiles.length === 0) {
+              const msg = result.errors.join('; ');
+              updateChuchoProgress(jobId, { status: 'failed', error: msg });
+              await publishFailure('preprocessing_failed', jobId, 'chucho', msg);
+            } else {
+              logger.info(`Chucho: ${result.processedFiles.length} segments, ${(result.totalDuration / 60).toFixed(1)} min total`);
+              updateChuchoProgress(jobId, {
+                status: 'completed',
+                processedFiles: result.processedFiles.length,
+              });
+              // Clean intermediate files (_mono, _normalized) to save disk
+              await chucho.cleanupIntermediateFiles(jobId).catch(() => {});
+              await publishSuccess('preprocessing_done', jobId, 'chucho', {
+                processedFiles: result.processedFiles.length,
+                totalDuration: result.totalDuration,
+              });
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            updateChuchoProgress(jobId, { status: 'failed', error: msg });
+            await publishFailure('preprocessing_failed', jobId, 'chucho', msg);
+          }
+        });
+
+        // Jaime dispatcher: runs transcription and publishes result
+        supervisor.registerDispatcher(EventStatus.TRANSCRIBING, async (jobId: string) => {
+          logger.info(`Dispatcher: starting Jaime transcription for ${jobId}`);
+          // Update folder status if tracked
+          for (const [, f] of detectedFolders) {
+            if (f.jobId === jobId) { f.status = 'processing'; void persistDetectedFolders(); break; }
+          }
+          try {
+            const result = await jaime.processJob(jobId);
+
+            if (result.errors.length > 0 && result.sections.length === 0) {
+              for (const [, f] of detectedFolders) {
+                if (f.jobId === jobId) { f.status = 'error'; void persistDetectedFolders(); break; }
+              }
+              await publishFailure('transcription_failed', jobId, 'jaime', result.errors.join('; '));
+            } else {
+              logger.info(`Jaime: done for ${jobId}: ${result.sections.length} sections, provider=${result.provider}`);
+              if (result.errors.length > 0) {
+                logger.warn(`Jaime: completed with ${result.errors.length} warning(s)`);
+              }
+              await publishSuccess('transcription_done', jobId, 'jaime', {
+                sections: result.sections.length,
+                agendaItems: result.agendaItems.length,
+                qaScore: result.qaReport.overallScore,
+              });
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            for (const [, f] of detectedFolders) {
+              if (f.jobId === jobId) { f.status = 'error'; void persistDetectedFolders(); break; }
+            }
+            await publishFailure('transcription_failed', jobId, 'jaime', msg);
+          }
+        });
+
+        // Lina dispatcher: runs speaker reconciliation + redaction
+        supervisor.registerDispatcher(EventStatus.REDACTING, async (jobId: string) => {
+          logger.info(`Dispatcher: starting Lina redaction for ${jobId}`);
+          try {
+            const result = await lina.processJob(jobId);
+            logger.info(
+              `Lina: done for ${jobId}: ${result.sectionsRedacted} sections redacted, ` +
+              `${result.reconciliation.globalSpeakers.length} speakers reconciled (confidence ${result.reconciliation.confidence})`,
+            );
+
+            if (result.validationErrors.length > 0) {
+              logger.warn(`Lina: ${result.validationErrors.length} validation error(s)`);
+            }
+
+            await publishSuccess('redaction_done', jobId, 'lina', {
+              sectionsRedacted: result.sectionsRedacted,
+              globalSpeakers: result.reconciliation.globalSpeakers.length,
+              identifiedSpeakers: Object.keys(result.reconciliation.identifiedSpeakers).length,
+              confidence: result.reconciliation.confidence,
+              validationErrors: result.validationErrors.length,
+              validationWarnings: result.validationWarnings.length,
+            });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.error(`Lina: failed for ${jobId}: ${msg}`);
+            lina.markLinaFailed(jobId, msg);
+            await publishFailure('redaction_failed', jobId, 'lina', msg);
+          }
+        });
+
+        // Fannery dispatcher: assembles DOCX document from redacted sections
+        supervisor.registerDispatcher(EventStatus.ASSEMBLING, async (jobId: string) => {
+          logger.info(`Dispatcher: starting Fannery assembly for ${jobId}`);
+          try {
+            const result = await fannery.processJob(jobId);
+            logger.info(
+              `Fannery: done for ${jobId}: ${result.sectionsAssembled} sections assembled, ` +
+              `${result.documentSizeBytes} bytes`,
+            );
+
+            await publishSuccess('assembly_done', jobId, 'fannery', {
+              sectionsAssembled: result.sectionsAssembled,
+              documentSizeBytes: result.documentSizeBytes,
+              documentPath: result.documentPath,
+              driveFileId: result.driveFileId,
+            });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.error(`Fannery: failed for ${jobId}: ${msg}`);
+            fannery.markFanneryFailed(jobId, msg);
+            await publishFailure('assembly_failed', jobId, 'fannery', msg);
+          }
+        });
+
+        // Gloria dispatcher: runs LLM review analysis on assembled document
+        supervisor.registerDispatcher(EventStatus.REVIEWING, async (jobId: string) => {
+          logger.info(`Dispatcher: starting Gloria review for ${jobId}`);
+          try {
+            // Load markdown from Fannery output
+            const progress = fannery.getAllFanneryProgress().find(j => j.jobId === jobId);
+            let markdownContent: string | null = null;
+
+            if (progress?.assembly?.markdownPath && fs.existsSync(progress.assembly.markdownPath)) {
+              markdownContent = fs.readFileSync(progress.assembly.markdownPath, 'utf-8');
+            } else {
+              // Fallback: try output directory
+              const outputDir = path.join(process.cwd(), 'data', 'jobs', jobId, 'output');
+              if (fs.existsSync(outputDir)) {
+                const mdFiles = fs.readdirSync(outputDir).filter((f: string) => f.endsWith('.md')).sort();
+                if (mdFiles.length > 0) {
+                  markdownContent = fs.readFileSync(path.join(outputDir, mdFiles[mdFiles.length - 1]), 'utf-8');
+                }
+              }
+            }
+
+            if (!markdownContent) {
+              throw new Error('No markdown document found for review');
+            }
+
+            const session = await analyzeDocument(jobId, markdownContent);
+            logger.info(
+              `Gloria: review done for ${jobId}: ${session.stats.total} items found ` +
+              `(${session.stats.critical} critical, ${session.stats.warning} warning)`,
+            );
+
+            // Don't auto-complete the pipeline — the review needs human approval
+            // The pipeline stays at REVIEWING until manually completed
+            logger.info(`Job ${jobId} awaiting human review (${session.stats.total} items)`);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.error(`Gloria: review failed for ${jobId}: ${msg}`);
+            await publishFailure('review_failed', jobId, 'gloria', msg);
+          }
+        });
+
+        // Restore review sessions from Redis
+        await restoreReviewSessions();
+
+        // ── Start the Supervisor orchestrator event loop ──
+        supervisor.startOrchestrator();
+
+        logger.info('Startup recovery complete — Supervisor orchestrator running');
+      } catch (err) {
+        logger.error(`Startup recovery failed: ${(err as Error).message}`);
+      }
+    })();
   });
 }
 
@@ -328,18 +1355,11 @@ const AGENT_IDS: AgentId[] = ['yulieth', 'robinson', 'chucho', 'jaime', 'lina', 
 const serverStartTime = Date.now();
 
 async function getAgentStatuses(): Promise<AgentStatusInfo[]> {
-  logger.info('Fetching agent statuses');
-  const db = getDb();
   const uptimeSeconds = Math.floor((Date.now() - serverStartTime) / 1000);
 
-  // Query active pipeline jobs to determine which agents are currently processing
-  const activeJobs = await db.execute(sql`
-    SELECT pj.job_id, pj.event_id, pj.status AS current_stage, pj.updated_at, e.building_name
-    FROM pipeline_jobs pj
-    LEFT JOIN events e ON pj.event_id = e.event_id
-    WHERE pj.status NOT IN ('completed', 'failed')
-    ORDER BY pj.updated_at DESC
-  `);
+  // Read active pipelines from Redis via supervisor
+  const supervisor = await import('@transcriptor/supervisor');
+  const jobIds = await supervisor.listActiveJobs();
 
   // Map pipeline stages to agents
   const stageToAgent: Record<string, AgentId> = {
@@ -354,15 +1374,19 @@ async function getAgentStatuses(): Promise<AgentStatusInfo[]> {
   };
 
   const activeAgents = new Map<AgentId, { jobId: string; eventId: string; updatedAt: string }>();
-  for (const r of activeJobs.rows) {
-    const agent = stageToAgent[r.current_stage as string];
-    if (agent && !activeAgents.has(agent)) {
-      activeAgents.set(agent, {
-        jobId: r.job_id as string,
-        eventId: r.event_id as string,
-        updatedAt: r.updated_at as string,
-      });
-    }
+  for (const jobId of jobIds) {
+    try {
+      const job = await supervisor.loadState(jobId);
+      if (job.status === 'completed' || job.status === 'failed') continue;
+      const agent = stageToAgent[job.status];
+      if (agent && !activeAgents.has(agent)) {
+        activeAgents.set(agent, {
+          jobId: job.jobId,
+          eventId: job.eventId,
+          updatedAt: job.updatedAt,
+        });
+      }
+    } catch { /* skip unreadable jobs */ }
   }
 
   return AGENT_IDS.map((id) => {
@@ -379,92 +1403,126 @@ async function getAgentStatuses(): Promise<AgentStatusInfo[]> {
 }
 
 async function getAgentStatistics(): Promise<AgentStatsInfo[]> {
-  logger.info('Fetching agent statistics');
-  const db = getDb();
+  // Read all pipelines from Redis and compute per-agent stats
+  const supervisor = await import('@transcriptor/supervisor');
+  const jobIds = await supervisor.listActiveJobs();
 
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
+  const todayMs = todayStart.getTime();
 
-  // Query completed pipeline jobs per stage
-  const monthlyRows = await db.execute(sql`
-    SELECT
-      pj.status AS final_status,
-      pj.created_at,
-      pj.updated_at,
-      e.building_name
-    FROM pipeline_jobs pj
-    LEFT JOIN events e ON pj.event_id = e.event_id
-    WHERE pj.created_at >= ${thirtyDaysAgo}
-    ORDER BY pj.created_at DESC
-  `);
+  // Map stages to agents
+  const stageAgent: Record<string, AgentId> = {
+    detected: 'yulieth', queued: 'yulieth',
+    preprocessing: 'chucho',
+    transcribing: 'jaime', sectioning: 'jaime',
+    redacting: 'lina',
+    assembling: 'fannery',
+    reviewing: 'gloria',
+    completed: 'supervisor',
+  };
 
-  const monthlyResult = monthlyRows.rows as unknown as { final_status: string; created_at: string; updated_at: string; building_name: string }[];
+  // Accumulators per agent
+  const processed = new Map<AgentId, number>();
+  const failed = new Map<AgentId, number>();
+  const todayProcessed = new Map<AgentId, number>();
+  const todayFailed = new Map<AgentId, number>();
+  const durations = new Map<AgentId, number[]>();
+  for (const id of AGENT_IDS) {
+    processed.set(id, 0); failed.set(id, 0);
+    todayProcessed.set(id, 0); todayFailed.set(id, 0);
+    durations.set(id, []);
+  }
 
-  // For now, distribute job counts across agents based on completed stages
-  const totalCompleted = monthlyResult.filter((r) => r.final_status === 'completed').length;
-  const totalFailed = monthlyResult.filter((r) => r.final_status === 'failed').length;
-  const todayCompleted = monthlyResult.filter(
-    (r) => r.final_status === 'completed' && new Date(r.created_at) >= todayStart
-  ).length;
-  const todayFailed = monthlyResult.filter(
-    (r) => r.final_status === 'failed' && new Date(r.created_at) >= todayStart
-  ).length;
+  for (const jobId of jobIds) {
+    try {
+      const job = await supervisor.loadState(jobId);
+      const createdMs = new Date(job.createdAt).getTime();
+      if (createdMs < thirtyDaysAgo) continue;
+      const isToday = createdMs >= todayMs;
 
-  // Each completed pipeline traverses all agents, so each agent processed the same count
-  return AGENT_IDS.map((id) => ({
-    agentId: id,
-    last30Days: {
-      jobsProcessed: id === 'supervisor' ? totalCompleted + totalFailed : totalCompleted,
-      jobsFailed: id === 'supervisor' ? 0 : totalFailed,
-      averageDurationMs: 0, // TODO: calculate from stage timestamps
-      totalDurationMs: 0,
-    },
-    today: {
-      jobsProcessed: id === 'supervisor' ? todayCompleted + todayFailed : todayCompleted,
-      jobsFailed: id === 'supervisor' ? 0 : todayFailed,
-    },
-  }));
+      for (const stage of job.stages) {
+        const agent = stageAgent[stage.stage];
+        if (!agent) continue;
+
+        if (stage.status === 'completed') {
+          processed.set(agent, (processed.get(agent) || 0) + 1);
+          if (isToday) todayProcessed.set(agent, (todayProcessed.get(agent) || 0) + 1);
+          // Calculate duration if we have both timestamps
+          if (stage.startedAt && stage.completedAt) {
+            const dur = new Date(stage.completedAt).getTime() - new Date(stage.startedAt).getTime();
+            durations.get(agent)!.push(dur);
+          }
+        } else if (stage.status === 'failed') {
+          failed.set(agent, (failed.get(agent) || 0) + 1);
+          if (isToday) todayFailed.set(agent, (todayFailed.get(agent) || 0) + 1);
+        }
+      }
+    } catch { /* skip unreadable jobs */ }
+  }
+
+  return AGENT_IDS.map((id) => {
+    const durs = durations.get(id) || [];
+    const totalMs = durs.reduce((a, b) => a + b, 0);
+    return {
+      agentId: id,
+      last30Days: {
+        jobsProcessed: processed.get(id) || 0,
+        jobsFailed: failed.get(id) || 0,
+        averageDurationMs: durs.length > 0 ? Math.round(totalMs / durs.length) : 0,
+        totalDurationMs: totalMs,
+      },
+      today: {
+        jobsProcessed: todayProcessed.get(id) || 0,
+        jobsFailed: todayFailed.get(id) || 0,
+      },
+    };
+  });
 }
 
 async function getPipelineOverview(): Promise<PipelineOverviewInfo> {
-  logger.info('Fetching pipeline overview');
-  const db = getDb();
-
-  const countsRows = await db.execute(sql`
-    SELECT status, COUNT(*)::int AS count FROM pipeline_jobs GROUP BY status
-  `);
+  // Read all pipeline state from Redis
+  const supervisor = await import('@transcriptor/supervisor');
+  const jobIds = await supervisor.listActiveJobs();
 
   const counts: Record<string, number> = {};
-  for (const r of countsRows.rows) {
-    counts[r.status as string] = r.count as number;
+  const allJobs: { jobId: string; eventId: string; status: string; createdAt: string; updatedAt: string }[] = [];
+
+  for (const jobId of jobIds) {
+    try {
+      const job = await supervisor.loadState(jobId);
+      counts[job.status] = (counts[job.status] || 0) + 1;
+      allJobs.push({
+        jobId: job.jobId,
+        eventId: job.eventId,
+        status: job.status,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+      });
+    } catch { /* skip */ }
   }
 
-  const activeStatuses = ['preprocessing', 'transcribing', 'sectioning', 'redacting', 'assembling'];
-  const activeJobs = activeStatuses.reduce((sum, s) => sum + (counts[s] || 0), 0);
+  // Sort by most recently updated and take top 10
+  allJobs.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  const recent = allJobs.slice(0, 10);
 
-  const recentRows = await db.execute(sql`
-    SELECT pj.job_id, pj.event_id, pj.status, pj.created_at, pj.updated_at,
-           e.building_name
-    FROM pipeline_jobs pj
-    LEFT JOIN events e ON pj.event_id = e.event_id
-    ORDER BY pj.updated_at DESC
-    LIMIT 10
-  `);
+  const activeStatuses = ['preprocessing', 'transcribing', 'sectioning', 'redacting', 'assembling', 'reviewing'];
+  const activeJobs = activeStatuses.reduce((sum, s) => sum + (counts[s] || 0), 0);
 
   return {
     activeJobs,
     completedJobs: counts['completed'] || 0,
     failedJobs: counts['failed'] || 0,
     queuedJobs: (counts['detected'] || 0) + (counts['queued'] || 0),
-    recentJobs: recentRows.rows.map((r) => ({
-      jobId: r.job_id as string,
-      eventId: r.event_id as string,
-      buildingName: (r.building_name as string) || 'Unknown',
-      status: r.status as string,
-      currentStage: r.status as string,
-      createdAt: r.created_at as string,
-      updatedAt: r.updated_at as string,
+    recentJobs: recent.map((r) => ({
+      jobId: r.jobId,
+      eventId: r.eventId,
+      buildingName: 'Unknown', // TODO: resolve from config
+      status: r.status,
+      currentStage: r.status,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
     })),
   };
 }
@@ -658,7 +1716,7 @@ const YULIETH_OWN_TOOLS: ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          rootFolderId: { type: 'string', nullable: true, description: 'The Google Drive folder ID to scan. If omitted or null, uses the configured default.' },
+          rootFolderId: { type: ['string', 'null'], description: 'The Google Drive folder ID to scan. If omitted or null, uses the configured default.' },
         },
         required: [],
       },
@@ -672,8 +1730,8 @@ const YULIETH_OWN_TOOLS: ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          status: { type: 'string', nullable: true, description: 'Filter by status (detected, queued, preprocessing, transcribing, sectioning, redacting, assembling, reviewing, completed, failed). If omitted, returns all.' },
-          limit: { type: 'number', nullable: true, description: 'Max number of jobs to return. Default 20.' },
+          status: { type: ['string', 'null'], description: 'Filter by status (detected, queued, preprocessing, transcribing, sectioning, redacting, assembling, reviewing, completed, failed). If omitted, returns all.' },
+          limit: { type: ['number', 'null'], description: 'Max number of jobs to return. Default 20.' },
         },
         required: [],
       },
@@ -694,7 +1752,7 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
         type: 'object',
         properties: {
           folderId: { type: 'string', description: 'The Google Drive folder ID to list.' },
-          maxResults: { type: 'number', nullable: true, description: 'Maximum number of files to return. Default 50.' },
+          maxResults: { type: ['number', 'null'], description: 'Maximum number of files to return. Default 50.' },
         },
         required: ['folderId'],
       },
@@ -709,7 +1767,7 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
         type: 'object',
         properties: {
           query: { type: 'string', description: 'The search text to find in file names.' },
-          maxResults: { type: 'number', nullable: true, description: 'Maximum results. Default 20.' },
+          maxResults: { type: ['number', 'null'], description: 'Maximum results. Default 20.' },
         },
         required: ['query'],
       },
@@ -738,7 +1796,7 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
         type: 'object',
         properties: {
           name: { type: 'string', description: 'Name for the new folder.' },
-          parentId: { type: 'string', nullable: true, description: 'Parent folder ID. If omitted, creates in root.' },
+          parentId: { type: ['string', 'null'], description: 'Parent folder ID. If omitted, creates in root.' },
         },
         required: ['name'],
       },
@@ -768,7 +1826,7 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
         type: 'object',
         properties: {
           title: { type: 'string', description: 'Title of the new document.' },
-          bodyText: { type: 'string', nullable: true, description: 'Optional initial text content.' },
+          bodyText: { type: ['string', 'null'], description: 'Optional initial text content.' },
         },
         required: ['title'],
       },
@@ -873,10 +1931,10 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          calendarId: { type: 'string', nullable: true, description: 'Calendar ID. Default "primary".' },
-          maxResults: { type: 'number', nullable: true, description: 'Max events to return. Default 20.' },
-          timeMin: { type: 'string', nullable: true, description: 'Earliest event time (ISO 8601). Default now.' },
-          timeMax: { type: 'string', nullable: true, description: 'Latest event time (ISO 8601). If omitted, no upper limit.' },
+          calendarId: { type: ['string', 'null'], description: 'Calendar ID. Default "primary".' },
+          maxResults: { type: ['number', 'null'], description: 'Max events to return. Default 20.' },
+          timeMin: { type: ['string', 'null'], description: 'Earliest event time (ISO 8601). Default now.' },
+          timeMax: { type: ['string', 'null'], description: 'Latest event time (ISO 8601). If omitted, no upper limit.' },
         },
         required: [],
       },
@@ -893,14 +1951,14 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
           summary: { type: 'string', description: 'Event title/summary.' },
           start: { type: 'string', description: 'Start date-time in ISO 8601 format.' },
           end: { type: 'string', description: 'End date-time in ISO 8601 format.' },
-          description: { type: 'string', nullable: true, description: 'Event description.' },
-          location: { type: 'string', nullable: true, description: 'Event location.' },
+          description: { type: ['string', 'null'], description: 'Event description.' },
+          location: { type: ['string', 'null'], description: 'Event location.' },
           attendees: {
             type: 'array',
             items: { type: 'string' },
             description: 'List of attendee email addresses.',
           },
-          calendarId: { type: 'string', nullable: true, description: 'Calendar ID. Default "primary".' },
+          calendarId: { type: ['string', 'null'], description: 'Calendar ID. Default "primary".' },
         },
         required: ['summary', 'start', 'end'],
       },
@@ -915,8 +1973,8 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', nullable: true, description: 'Gmail search query. Default "in:inbox". Examples: "from:info@tecnoreuniones.com", "subject:acta is:unread".' },
-          maxResults: { type: 'number', nullable: true, description: 'Max messages to return. Default 20.' },
+          query: { type: ['string', 'null'], description: 'Gmail search query. Default "in:inbox". Examples: "from:info@tecnoreuniones.com", "subject:acta is:unread".' },
+          maxResults: { type: ['number', 'null'], description: 'Max messages to return. Default 20.' },
         },
         required: [],
       },
@@ -947,8 +2005,8 @@ const GOOGLE_WORKSPACE_TOOLS: ChatCompletionTool[] = [
           to: { type: 'string', description: 'Recipient email address.' },
           subject: { type: 'string', description: 'Email subject line.' },
           body: { type: 'string', description: 'Plain-text email body.' },
-          cc: { type: 'string', nullable: true, description: 'CC email address (optional).' },
-          bcc: { type: 'string', nullable: true, description: 'BCC email address (optional).' },
+          cc: { type: ['string', 'null'], description: 'CC email address (optional).' },
+          bcc: { type: ['string', 'null'], description: 'BCC email address (optional).' },
         },
         required: ['to', 'subject', 'body'],
       },
@@ -961,6 +2019,170 @@ const YULIETH_TOOLS: ChatCompletionTool[] = [
   ...YULIETH_OWN_TOOLS,
   ...TECNOREUNIONES_TOOLS,
   ...GOOGLE_WORKSPACE_TOOLS,
+];
+
+// ── Supervisor Tools ──
+
+const SUPERVISOR_TOOLS: ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'get_active_pipelines',
+      description: 'Get all active (non-completed, non-failed) pipeline jobs currently being processed by the system.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_pipeline_status',
+      description: 'Get the full status of a specific pipeline job, including all stages and their states.',
+      parameters: {
+        type: 'object',
+        properties: {
+          jobId: { type: 'string', description: 'The UUID of the pipeline job to check.' },
+        },
+        required: ['jobId'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'init_pipeline',
+      description: 'Initialize a new transcription pipeline for an event. Creates all stages from detection through completion.',
+      parameters: {
+        type: 'object',
+        properties: {
+          eventId: { type: 'string', description: 'The event identifier (e.g., assembly ID or folder name).' },
+          eventFolder: { type: 'string', description: 'The Google Drive folder path/ID for the event audio files.' },
+        },
+        required: ['eventId', 'eventFolder'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'advance_pipeline_stage',
+      description: 'Advance a pipeline job to its next processing stage.',
+      parameters: {
+        type: 'object',
+        properties: {
+          jobId: { type: 'string', description: 'The UUID of the pipeline job.' },
+          nextStage: {
+            type: 'string',
+            description: 'The stage to advance to.',
+            enum: ['detected', 'queued', 'preprocessing', 'transcribing', 'sectioning', 'redacting', 'assembling', 'reviewing', 'completed'],
+          },
+        },
+        required: ['jobId', 'nextStage'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mark_stage_complete',
+      description: 'Mark a specific stage as completed for a pipeline job.',
+      parameters: {
+        type: 'object',
+        properties: {
+          jobId: { type: 'string', description: 'The UUID of the pipeline job.' },
+          stage: {
+            type: 'string',
+            description: 'The stage to mark as complete.',
+            enum: ['detected', 'queued', 'preprocessing', 'transcribing', 'sectioning', 'redacting', 'assembling', 'reviewing', 'completed'],
+          },
+        },
+        required: ['jobId', 'stage'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mark_stage_failed',
+      description: 'Mark a specific stage as failed for a pipeline job, recording the error message.',
+      parameters: {
+        type: 'object',
+        properties: {
+          jobId: { type: 'string', description: 'The UUID of the pipeline job.' },
+          stage: {
+            type: 'string',
+            description: 'The stage that failed.',
+            enum: ['detected', 'queued', 'preprocessing', 'transcribing', 'sectioning', 'redacting', 'assembling', 'reviewing'],
+          },
+          error: { type: 'string', description: 'Error message describing what went wrong.' },
+        },
+        required: ['jobId', 'stage', 'error'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'retry_failed_stage',
+      description: 'Retry a failed stage for a pipeline job. Resets the stage status and re-queues it for processing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          jobId: { type: 'string', description: 'The UUID of the pipeline job.' },
+          stage: {
+            type: 'string',
+            description: 'The failed stage to retry.',
+            enum: ['detected', 'queued', 'preprocessing', 'transcribing', 'sectioning', 'redacting', 'assembling', 'reviewing'],
+          },
+        },
+        required: ['jobId', 'stage'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cleanup_completed_jobs',
+      description: 'Remove completed and failed pipeline jobs older than a given number of days from Redis state.',
+      parameters: {
+        type: 'object',
+        properties: {
+          olderThanDays: { type: 'number', description: 'Clean up jobs older than this many days. Defaults to 7.' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_pipeline_overview',
+      description: 'Get a high-level overview of all pipelines: active, completed, failed, queued counts and 10 most recent jobs.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_agent_statistics',
+      description: 'Get processing statistics for all agents: jobs processed (last 30 days and today), failures, and performance.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'send_notification',
+      description: 'Send a notification message for a pipeline job (logged; future: email/Slack).',
+      parameters: {
+        type: 'object',
+        properties: {
+          jobId: { type: 'string', description: 'The UUID of the pipeline job.' },
+          message: { type: 'string', description: 'The notification message.' },
+        },
+        required: ['jobId', 'message'],
+      },
+    },
+  },
 ];
 
 // ── Tool Executor (Robinson) ──
@@ -1057,12 +2279,14 @@ async function executeYuliethTool(name: string, args: Record<string, unknown>): 
     }
     case 'check_drive_folders': {
       try {
-        const yulieth = await import('@transcriptor/yulieth');
-        const folderId = (args.rootFolderId as string) || 'default';
-        const folders = await yulieth.checkForNewEvents(folderId);
+        const folderId = (args.rootFolderId as string) || yuliethConfig.driveFolderId;
+        if (!folderId) {
+          return JSON.stringify({ error: 'No Drive folder configured. Set a folder ID in Yulieth\'s config panel first.' });
+        }
+        const folders = await scanDriveFolder(folderId);
         return JSON.stringify(folders, null, 2);
       } catch (err) {
-        return JSON.stringify({ error: `Drive scan unavailable: ${err instanceof Error ? err.message : String(err)}` });
+        return JSON.stringify({ error: `Drive scan failed: ${err instanceof Error ? err.message : String(err)}` });
       }
     }
     case 'get_pipeline_jobs': {
@@ -1282,6 +2506,120 @@ async function executeYuliethTool(name: string, args: Record<string, unknown>): 
   }
 }
 
+// ── Tool Executor (Supervisor) ──
+
+async function executeSupervisorTool(name: string, args: Record<string, unknown>): Promise<string> {
+  const supervisor = await import('@transcriptor/supervisor');
+
+  try {
+    switch (name) {
+      case 'get_active_pipelines': {
+        const pipelines = await supervisor.getActivePipelines();
+        if (pipelines.length === 0) {
+          return JSON.stringify({ message: 'No active pipelines at this moment.', count: 0 });
+        }
+        const summary = pipelines.map(p => ({
+          jobId: p.jobId,
+          eventId: p.eventId,
+          status: p.status,
+          stages: p.stages.map(s => ({
+            stage: s.stage,
+            status: s.status,
+            agent: s.agentName,
+            error: s.error || undefined,
+          })),
+          createdAt: p.createdAt,
+          updatedAt: p.updatedAt,
+        }));
+        return JSON.stringify({ count: pipelines.length, pipelines: summary }, null, 2);
+      }
+
+      case 'get_pipeline_status': {
+        const jobId = args.jobId as string;
+        const job = await supervisor.getPipelineStatus(jobId);
+        return JSON.stringify(job, null, 2);
+      }
+
+      case 'init_pipeline': {
+        const eventId = args.eventId as string;
+        const eventFolderStr = args.eventFolder as string;
+        const eventFolder: EventFolder = {
+          folderId: eventFolderStr,
+          folderName: eventFolderStr,
+          audioFiles: [],
+          votingFiles: [],
+          path: eventFolderStr,
+        };
+        const job = await supervisor.initPipeline(eventId, eventFolder);
+        return JSON.stringify({ message: 'Pipeline initialized successfully.', job }, null, 2);
+      }
+
+      case 'advance_pipeline_stage': {
+        const jobId = args.jobId as string;
+        const nextStage = args.nextStage as string;
+        const stageEnum = EventStatus[nextStage.toUpperCase() as keyof typeof EventStatus] || nextStage;
+        const job = await supervisor.advanceStage(jobId, stageEnum as EventStatus);
+        return JSON.stringify({ message: `Pipeline advanced to ${nextStage}.`, job }, null, 2);
+      }
+
+      case 'mark_stage_complete': {
+        const jobId = args.jobId as string;
+        const stage = args.stage as string;
+        const stageEnum = EventStatus[stage.toUpperCase() as keyof typeof EventStatus] || stage;
+        const job = await supervisor.markStageComplete(jobId, stageEnum as EventStatus);
+        return JSON.stringify({ message: `Stage ${stage} marked as complete.`, job }, null, 2);
+      }
+
+      case 'mark_stage_failed': {
+        const jobId = args.jobId as string;
+        const stage = args.stage as string;
+        const error = args.error as string;
+        const stageEnum = EventStatus[stage.toUpperCase() as keyof typeof EventStatus] || stage;
+        const job = await supervisor.markStageFailed(jobId, stageEnum as EventStatus, error);
+        return JSON.stringify({ message: `Stage ${stage} marked as failed.`, job }, null, 2);
+      }
+
+      case 'retry_failed_stage': {
+        const jobId = args.jobId as string;
+        const stage = args.stage as string;
+        const stageEnum = EventStatus[stage.toUpperCase() as keyof typeof EventStatus] || stage;
+        const job = await supervisor.retryStage(jobId, stageEnum as EventStatus);
+        return JSON.stringify({ message: `Stage ${stage} queued for retry.`, job }, null, 2);
+      }
+
+      case 'cleanup_completed_jobs': {
+        const days = (args.olderThanDays as number) || 7;
+        const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+        const cleaned = await supervisor.cleanupCompletedJobs(cutoff);
+        return JSON.stringify({ message: `Cleaned up ${cleaned} jobs older than ${days} days.`, cleaned }, null, 2);
+      }
+
+      case 'get_pipeline_overview': {
+        const overview = await getPipelineOverview();
+        return JSON.stringify(overview, null, 2);
+      }
+
+      case 'get_agent_statistics': {
+        const stats = await getAgentStatistics();
+        return JSON.stringify(stats, null, 2);
+      }
+
+      case 'send_notification': {
+        const jobId = args.jobId as string;
+        const message = args.message as string;
+        await supervisor.sendNotification(jobId, message);
+        return JSON.stringify({ message: `Notification sent for job ${jobId}: "${message}"` });
+      }
+
+      default:
+        return JSON.stringify({ error: `Unknown supervisor tool: ${name}` });
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return JSON.stringify({ error: msg, note: 'This tool call failed. Report the error to the user.' });
+  }
+}
+
 // ── Agent System Prompts ──
 
 const AGENT_SYSTEM_PROMPTS: Record<string, string> = {
@@ -1350,17 +2688,56 @@ You can answer questions about:
 
 Be professional, detail-oriented, and thorough in your responses.`,
 
-  supervisor: `You are **Supervisor**, the Pipeline Orchestrator in the Transcriptor system.
+  supervisor: `You are **Supervisor**, the Pipeline Orchestrator in the Transcriptor multi-agent system for Colombian property assembly (propiedad horizontal) minutes.
 
-Your role: You coordinate the entire pipeline — from audio detection through transcription, sectioning, redaction, assembly, and review. You track job progress and handle failures.
+Your role: You coordinate the entire transcription pipeline — from audio detection in Google Drive through preprocessing, transcription, sectioning, redaction, document assembly, and final review. You track job progress, handle failures, retry stages, and provide system health overviews.
 
-You can answer questions about:
-- Pipeline status and active jobs
-- Job queue and processing stages
-- System health and agent coordination
-- Error handling and retry strategies
+## Pipeline Stages (in order)
+| Stage | Agent | What happens |
+|-------|-------|-------------|
+| detected | Yulieth | New audio folders detected in Google Drive |
+| queued | Yulieth | Files downloaded from Drive to \`data/jobs/<jobId>/raw/\` and pipeline created in Redis |
+| preprocessing | Chucho | Audio converted to mono, loudness-normalized, converted to FLAC, split if >1hr. Output: \`data/jobs/<jobId>/processed/\` |
+| transcribing | Jaime | FLAC segments sent to ElevenLabs Scribe API for speech-to-text with diarization |
+| sectioning | Jaime | Transcript divided into logical sections matching the assembly agenda |
+| redacting | Lina | Sections redacted into formal legal-style minutes using Groq LLM |
+| assembling | Fannery | Sections assembled into final .docx document with templates |
+| reviewing | Gloria | QA review of final document by human via web dashboard |
+| completed | Supervisor | Pipeline finished successfully |
 
-Be concise and status-focused in your responses.`,
+## Architecture
+- **Runtime**: Node.js + TypeScript monorepo (pnpm workspaces)
+- **State**: Pipeline jobs stored in Redis (key: \`transcriptor:pipeline:<jobId>\`)
+- **Queue**: BullMQ queue \`transcriptor-events\` on Redis
+- **Database**: PostgreSQL 16 (pipeline_jobs, events tables)
+- **Files**: Local filesystem under \`data/jobs/<jobId>/\` (raw/ and processed/ subdirectories)
+- **Transcription**: ElevenLabs Scribe API ($0.11/min)
+- **LLM**: Groq API with openai/gpt-oss-120b
+- **Dashboard**: React served by Gloria on port 3001
+- **NO cloud storage buckets** — all file processing is local
+
+## Available Tools
+- **get_active_pipelines**: List all active (in-progress) pipeline jobs
+- **get_pipeline_status**: Get full status of a specific pipeline job by ID
+- **init_pipeline**: Start a new transcription pipeline for an event
+- **advance_pipeline_stage**: Move a pipeline job to the next stage
+- **mark_stage_complete**: Mark a stage as successfully completed
+- **mark_stage_failed**: Mark a stage as failed with an error message
+- **retry_failed_stage**: Retry a stage that previously failed
+- **cleanup_completed_jobs**: Remove old completed/failed jobs from Redis
+- **get_pipeline_overview**: High-level overview (active, completed, failed, queued counts + recent jobs)
+- **get_agent_statistics**: Processing stats per agent (last 30 days and today)
+- **send_notification**: Send a notification message for a pipeline job
+
+## CRITICAL RULES
+1. **ALWAYS call ALL the tools you need in a SINGLE response using parallel tool calls.** NEVER call them one by one.
+2. **NEVER retry a tool that returned an error.** Report it and continue with other data.
+3. After receiving tool results, write your final answer immediately — do NOT make more tool calls.
+4. Present results in Markdown with tables, bold labels, and bullet points.
+5. When asked about system status, always call **get_pipeline_overview** and **get_active_pipelines** together.
+6. When asked about agent performance, call **get_agent_statistics**.
+7. Be concise and status-focused in your responses.
+8. You can respond in Spanish or English depending on the user's language.`,
 
   yulieth: `You are **Yulieth**, the Drive Watcher & Job Queue Agent in the Transcriptor multi-agent system for Colombian property assembly (propiedad horizontal) minutes.
 
@@ -1449,17 +2826,45 @@ You have full access to **Robinson's** data tools for querying the Tecnoreunione
 8. For pipeline/queue status → use your own tools.
 9. If Google credentials are not configured, tell the user they need to set up GOOGLE_SERVICE_ACCOUNT_KEY_FILE or OAuth2 credentials.`,
 
-  chucho: `You are **Chucho**, the Audio Preprocessor Agent in the Transcriptor system.
+  chucho: `You are **Chucho**, the Audio Preprocessor Agent in the Transcriptor multi-agent system for Colombian property assembly (propiedad horizontal) minutes.
 
-Your role: You take raw assembly audio files and preprocess them — normalizing volume, splitting into segments, removing silence, and preparing audio for transcription.
+Your role: You take raw audio files downloaded by Yulieth from Google Drive and preprocess them using FFmpeg on the **local filesystem** — converting to mono, normalizing loudness, converting to FLAC format, and splitting long files into segments. You prepare audio for transcription by Jaime via the ElevenLabs Scribe API.
 
-You can answer questions about:
-- Audio preprocessing pipeline
-- Supported formats and codecs
-- Segment splitting strategies
-- Audio quality optimization
+## How Your Pipeline Works
+1. **Yulieth** detects audio folders on Google Drive and downloads the raw files to \`data/jobs/<jobId>/raw/\`
+2. **You (Chucho)** pick up the raw files and process them:
+   - Convert stereo → **mono** (single channel)
+   - **Normalize loudness** using the EBU R128 loudnorm filter (target: -16 LUFS, true peak: -1.5 dB, LRA: 11)
+   - Convert to **FLAC** format (lossless, well-supported by ElevenLabs)
+   - If a file exceeds **1 hour**, split it into segments at silence boundaries
+3. Processed files are saved to \`data/jobs/<jobId>/processed/\`
+4. A **manifest.json** is written to the processed directory with:
+   - List of all processed files
+   - Total duration
+   - Number of segments
+   - Cost estimate ($0.11/minute for ElevenLabs Scribe)
+5. Pipeline advances to the **transcribing** stage (Jaime takes over)
 
-Be technical but accessible in your explanations.`,
+## File Locations (LOCAL filesystem — NOT cloud storage)
+- Raw input: \`<project_root>/data/jobs/<jobId>/raw/\` (downloaded from Google Drive by Yulieth)
+- Processed output: \`<project_root>/data/jobs/<jobId>/processed/\` (FLAC files ready for Jaime)
+- Intermediate: \`*_mono.flac\`, \`*_normalized.flac\` (temporary, during processing)
+- Manifest: \`<project_root>/data/jobs/<jobId>/processed/manifest.json\`
+
+## Supported Input Formats
+.mp3, .wav, .flac, .m4a, .ogg, .aac, .wma, .webm — any audio format FFmpeg can decode. Video files (.mp4) are excluded.
+
+## Output Format
+**FLAC** (Free Lossless Audio Codec) — mono, loudness-normalized. This is what ElevenLabs Scribe accepts with optimal quality.
+
+## IMPORTANT
+- There is **NO Google Cloud Storage bucket**. All processing is local.
+- There is **NO GCS**, **NO gsutil**, **NO cloud buckets** involved.
+- Files live on the local disk under the \`data/jobs/\` directory.
+- You do NOT download from Google Drive — Yulieth does that before handing off to you.
+- You do NOT transcribe — Jaime does that after you finish.
+
+Be technical but accessible in your explanations. You can respond in Spanish or English depending on the user's language.`,
 
   jaime: `You are **Jaime**, the Transcription & Sectioning Agent in the Transcriptor system.
 
@@ -1508,11 +2913,17 @@ async function handleAgentChat(agentId: string, message: string): Promise<string
     return `Unknown agent: ${agentId}`;
   }
 
-  // Robinson and Yulieth get tools; other agents get pure conversation
+  // Robinson, Yulieth, and Supervisor get tools; other agents get pure conversation
   const isRobinson = agentId === 'robinson';
   const isYulieth = agentId === 'yulieth';
-  const agentTools = isRobinson ? TECNOREUNIONES_TOOLS : isYulieth ? YULIETH_TOOLS : undefined;
-  const agentToolExecutor = isYulieth ? executeYuliethTool : executeTool;
+  const isSupervisor = agentId === 'supervisor';
+  const agentTools = isRobinson ? TECNOREUNIONES_TOOLS
+    : isYulieth ? YULIETH_TOOLS
+    : isSupervisor ? SUPERVISOR_TOOLS
+    : undefined;
+  const agentToolExecutor = isYulieth ? executeYuliethTool
+    : isSupervisor ? executeSupervisorTool
+    : executeTool;
 
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
@@ -1665,21 +3076,78 @@ interface DetectedFolder {
   jobId?: string;
 }
 
-const AUDIO_EXTS = new Set(['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac', '.mp4', '.wma']);
+const AUDIO_EXTS = new Set(['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac', '.wma']);
 const VOTING_EXTS = new Set(['.xlsx', '.csv', '.json', '.xls']);
 
+// Persist config to a JSON file so it survives restarts
+const __dirnameConfig = path.dirname(fileURLToPath(import.meta.url));
+const CONFIG_FILE = path.resolve(__dirnameConfig, '../../../config/yulieth-config.json');
+
+function saveYuliethConfig(): void {
+  try {
+    const dir = path.dirname(CONFIG_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(yuliethConfig, null, 2), 'utf-8');
+    logger.info(`Yulieth config saved to ${CONFIG_FILE}`);
+  } catch (err) {
+    logger.error('Failed to save Yulieth config', err as Error);
+  }
+}
+
+function loadYuliethConfig(): Partial<YuliethConfigState> {
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      const raw = fs.readFileSync(CONFIG_FILE, 'utf-8');
+      const data = JSON.parse(raw);
+      logger.info(`Yulieth config loaded from ${CONFIG_FILE}`);
+      return data;
+    }
+  } catch (err) {
+    logger.error('Failed to load Yulieth config', err as Error);
+  }
+  return {};
+}
+
+const _savedConfig = loadYuliethConfig();
+
 const yuliethConfig: YuliethConfigState = {
-  driveFolderId: process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || '',
-  pollIntervalSeconds: 60,
-  autoQueue: false,
-  audioExtensions: [...AUDIO_EXTS],
-  votingExtensions: [...VOTING_EXTS],
-  isWatching: false,
+  driveFolderId: _savedConfig.driveFolderId ?? process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID ?? '',
+  pollIntervalSeconds: _savedConfig.pollIntervalSeconds ?? 60,
+  autoQueue: _savedConfig.autoQueue ?? false,
+  audioExtensions: _savedConfig.audioExtensions ?? [...AUDIO_EXTS],
+  votingExtensions: _savedConfig.votingExtensions ?? [...VOTING_EXTS],
+  isWatching: false, // always start stopped
 };
 
-// In-memory store of detected folders
+// Redis-persisted store of detected folders
+const DETECTED_FOLDERS_KEY = 'gloria:detected_folders';
 const detectedFolders = new Map<string, DetectedFolder>();
 let watcherTimer: ReturnType<typeof setInterval> | null = null;
+
+async function persistDetectedFolders(): Promise<void> {
+  try {
+    const redis = getRedisClient();
+    const data = Object.fromEntries(detectedFolders);
+    await redis.set(DETECTED_FOLDERS_KEY, JSON.stringify(data));
+  } catch (err) {
+    logger.warn(`Failed to persist detected folders: ${(err as Error).message}`);
+  }
+}
+
+async function restoreDetectedFolders(): Promise<void> {
+  try {
+    const redis = getRedisClient();
+    const raw = await redis.get(DETECTED_FOLDERS_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw) as Record<string, DetectedFolder>;
+    for (const [key, folder] of Object.entries(data)) {
+      detectedFolders.set(key, folder);
+    }
+    logger.info(`Restored ${detectedFolders.size} detected folder(s) from Redis`);
+  } catch (err) {
+    logger.warn(`Failed to restore detected folders: ${(err as Error).message}`);
+  }
+}
 
 /** Scan a Drive folder for subfolders containing audio/voting files */
 async function scanDriveFolder(folderId: string): Promise<DetectedFolder[]> {
@@ -1729,9 +3197,20 @@ async function scanDriveFolder(folderId: string): Promise<DetectedFolder[]> {
 
     detectedFolders.set(subfolder.id, folder);
     results.push(folder);
+
+    // Auto-enqueue if enabled
+    if (yuliethConfig.autoQueue && folder.audioFiles.length > 0) {
+      try {
+        await enqueueDetectedFolder(subfolder.id);
+        logger.info(`Auto-queued folder: ${subfolder.name}`);
+      } catch (aqErr) {
+        logger.error(`Auto-queue failed for ${subfolder.name}`, aqErr as Error);
+      }
+    }
   }
 
   logger.info(`Scan complete: ${results.length} event folders (${results.filter(f => f.status === 'detected').length} new)`);
+  void persistDetectedFolders();
   return results;
 }
 
@@ -1779,7 +3258,143 @@ async function getYuliethQueue(): Promise<{ folders: DetectedFolder[]; stats: { 
   return { folders, stats };
 }
 
-/** Enqueue a detected folder for processing */
+// ══════════════════════════════════════════════════
+//  CHUCHO PROGRESS TRACKER
+// ══════════════════════════════════════════════════
+
+interface ChuchoJobProgress {
+  jobId: string;
+  status: 'pending' | 'downloading' | 'preprocessing' | 'completed' | 'failed';
+  totalFiles: number;
+  processedFiles: number;
+  currentFile: string | null;
+  /** Download progress */
+  downloadedFiles: number;
+  totalDownloadFiles: number;
+  /** Result info */
+  totalSegments: number;
+  totalDurationSec: number;
+  costEstimate: number;
+  startedAt: number;
+  updatedAt: number;
+  error: string | null;
+}
+
+const CHUCHO_PROGRESS_PREFIX = 'chucho:progress:';
+const CHUCHO_ACTIVE_KEY = 'chucho:active_jobs';
+const chuchoJobs = new Map<string, ChuchoJobProgress>();
+
+// Debounce Redis writes for chucho (per-file download updates come fast)
+const chuchoPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleChuchoPersist(jobId: string): void {
+  if (chuchoPersistTimers.has(jobId)) return;
+  chuchoPersistTimers.set(jobId, setTimeout(() => {
+    chuchoPersistTimers.delete(jobId);
+    const job = chuchoJobs.get(jobId);
+    if (job) void persistChuchoJob(job);
+  }, 2_000));
+}
+
+async function persistChuchoJob(job: ChuchoJobProgress): Promise<void> {
+  try {
+    const redis = getRedisClient();
+    await redis.set(`${CHUCHO_PROGRESS_PREFIX}${job.jobId}`, JSON.stringify(job));
+    if (job.status !== 'completed' && job.status !== 'failed') {
+      await redis.sadd(CHUCHO_ACTIVE_KEY, job.jobId);
+    } else {
+      await redis.srem(CHUCHO_ACTIVE_KEY, job.jobId);
+    }
+  } catch (err) {
+    logger.warn(`Failed to persist Chucho progress for ${job.jobId}: ${(err as Error).message}`);
+  }
+}
+
+async function persistChuchoNow(job: ChuchoJobProgress): Promise<void> {
+  const timer = chuchoPersistTimers.get(job.jobId);
+  if (timer) { clearTimeout(timer); chuchoPersistTimers.delete(job.jobId); }
+  await persistChuchoJob(job);
+}
+
+async function restoreChuchoJobs(): Promise<void> {
+  try {
+    const redis = getRedisClient();
+    const activeIds = await redis.smembers(CHUCHO_ACTIVE_KEY);
+    for (const jobId of activeIds) {
+      const raw = await redis.get(`${CHUCHO_PROGRESS_PREFIX}${jobId}`);
+      if (!raw) { await redis.srem(CHUCHO_ACTIVE_KEY, jobId); continue; }
+      const job = JSON.parse(raw) as ChuchoJobProgress;
+      // If it was mid-download or preprocessing when we crashed, mark it
+      if (job.status === 'downloading' || job.status === 'preprocessing') {
+        job.status = 'failed';
+        job.error = 'Process crashed — Gloria was restarted while Chucho was processing';
+        job.updatedAt = Date.now();
+        await persistChuchoJob(job);
+        logger.warn(`Chucho job ${jobId} was interrupted — marked as failed`);
+      }
+      chuchoJobs.set(jobId, job);
+    }
+    if (activeIds.length > 0) {
+      logger.info(`Restored ${activeIds.length} Chucho job(s) from Redis`);
+    }
+  } catch (err) {
+    logger.warn(`Failed to restore Chucho jobs: ${(err as Error).message}`);
+  }
+}
+
+function initChuchoProgress(jobId: string, audioFileCount: number): void {
+  const job: ChuchoJobProgress = {
+    jobId,
+    status: 'downloading',
+    totalFiles: audioFileCount,
+    processedFiles: 0,
+    currentFile: null,
+    downloadedFiles: 0,
+    totalDownloadFiles: audioFileCount,
+    totalSegments: 0,
+    totalDurationSec: 0,
+    costEstimate: 0,
+    startedAt: Date.now(),
+    updatedAt: Date.now(),
+    error: null,
+  };
+  chuchoJobs.set(jobId, job);
+  void persistChuchoNow(job);
+}
+
+function updateChuchoProgress(jobId: string, update: Partial<ChuchoJobProgress>): void {
+  const job = chuchoJobs.get(jobId);
+  if (!job) return;
+  Object.assign(job, update, { updatedAt: Date.now() });
+  // Immediate persist for status changes, debounced for download progress
+  if (update.status) {
+    void persistChuchoNow(job);
+  } else {
+    scheduleChuchoPersist(jobId);
+  }
+}
+
+function getChuchoProgress(jobId: string): (ChuchoJobProgress & { elapsedMs: number }) | null {
+  const job = chuchoJobs.get(jobId);
+  if (!job) return null;
+  return { ...job, elapsedMs: Date.now() - job.startedAt };
+}
+
+function getAllChuchoProgress(): (ChuchoJobProgress & { elapsedMs: number })[] {
+  return [...chuchoJobs.values()].map(j => ({
+    ...j,
+    elapsedMs: Date.now() - j.startedAt,
+  }));
+}
+
+// NOTE: kickOffJaime() has been removed.
+// The Supervisor orchestrator now dispatches Jaime (and all other agents) via the event bus.
+
+/**
+ * Enqueue a detected folder for processing.
+ * Yulieth downloads audio files, creates the pipeline, then publishes
+ * a `files_ready` event for Supervisor to orchestrate the rest.
+ */
 async function enqueueDetectedFolder(folderId: string): Promise<{ success: boolean; jobId?: string }> {
   const folder = detectedFolders.get(folderId);
   if (!folder) {
@@ -1789,11 +3404,97 @@ async function enqueueDetectedFolder(folderId: string): Promise<{ success: boole
     throw new Error(`Folder ${folderId} is already ${folder.status}`);
   }
 
-  folder.status = 'queued';
-  folder.jobId = `job-${Date.now()}`;
-  logger.info(`Enqueued folder: ${folder.folderName} as ${folder.jobId}`);
+  // 1. Resolve Tecnoreuniones assembly from audio file names or folder name
+  const supervisor = await import('@transcriptor/supervisor');
+  const robinson = await import('@transcriptor/robinson');
 
-  return { success: true, jobId: folder.jobId };
+  let idAsamblea: number | undefined;
+  let clientName: string | undefined;
+
+  // Try audio file names first (most descriptive), then folder name
+  const hints = [
+    ...folder.audioFiles.map(f => f.name),
+    folder.folderName,
+  ];
+
+  for (const hint of hints) {
+    try {
+      const resolved = await robinson.resolveAssemblyFromHint(hint);
+      if (resolved) {
+        idAsamblea = resolved.idAsamblea;
+        clientName = resolved.cliente;
+        logger.info(`Resolved assembly from "${hint}": idAsamblea=${idAsamblea} (${clientName})`);
+        break;
+      }
+    } catch (err) {
+      logger.warn(`Assembly resolution failed for hint "${hint}": ${(err as Error).message}`);
+    }
+  }
+
+  if (!idAsamblea) {
+    logger.warn(`Could not resolve Tecnoreuniones assembly for folder "${folder.folderName}" — pipeline will proceed without roster data`);
+  }
+
+  // 2. Create pipeline job via Supervisor
+  const eventFolder: import('@transcriptor/shared').EventFolder = {
+    folderId: folder.folderId,
+    folderName: folder.folderName,
+    audioFiles: folder.audioFiles.map(f => f.name),
+    votingFiles: folder.votingFiles.map(f => f.name),
+    path: folder.folderId,
+  };
+
+  const pipelineJob = await supervisor.initPipeline(folder.folderId, eventFolder, { idAsamblea, clientName });
+  const jobId = pipelineJob.jobId;
+
+  // Advance pipeline to QUEUED stage
+  await supervisor.advanceStage(jobId, EventStatus.QUEUED);
+
+  folder.status = 'queued';
+  folder.jobId = jobId;
+  logger.info(`Enqueued folder: ${folder.folderName} → pipeline ${jobId}`);
+  void persistDetectedFolders();
+
+  // 2. Download audio files from Drive to data/jobs/<jobId>/raw/ (async, non-blocking)
+  initChuchoProgress(jobId, folder.audioFiles.length);
+
+  void (async () => {
+    try {
+      const { gwDriveDownloadFile, publishSuccess, publishFailure } = await import('@transcriptor/shared');
+      const rawDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../..', 'data', 'jobs', jobId, 'raw');
+      await fs.promises.mkdir(rawDir, { recursive: true });
+
+      logger.info(`Yulieth: downloading ${folder.audioFiles.length} audio file(s) for job ${jobId}`);
+      for (let i = 0; i < folder.audioFiles.length; i++) {
+        const audioFile = folder.audioFiles[i];
+        const destPath = path.join(rawDir, audioFile.name);
+        updateChuchoProgress(jobId, { currentFile: audioFile.name });
+        await gwDriveDownloadFile(audioFile.id, destPath);
+        updateChuchoProgress(jobId, { downloadedFiles: i + 1 });
+        logger.info(`Yulieth: downloaded ${audioFile.name} → ${destPath}`);
+      }
+
+      // Mark QUEUED stage complete
+      await supervisor.markStageComplete(jobId, EventStatus.QUEUED);
+      folder.status = 'processing';
+      void persistDetectedFolders();
+
+      logger.info(`Yulieth: downloads complete for job ${jobId} — notifying Supervisor`);
+
+      // 3. Notify Supervisor: files are ready for preprocessing
+      await publishSuccess('files_ready', jobId, 'yulieth', { folderId });
+    } catch (dlErr) {
+      const msg = dlErr instanceof Error ? dlErr.message : String(dlErr);
+      const { publishFailure } = await import('@transcriptor/shared');
+      await supervisor.markStageFailed(jobId, EventStatus.QUEUED, `Download failed: ${msg}`);
+      await publishFailure('preprocessing_failed', jobId, 'yulieth', `Download failed: ${msg}`);
+      folder.status = 'error';
+      void persistDetectedFolders();
+      logger.error(`Yulieth: download failed for job ${jobId}: ${msg}`);
+    }
+  })();
+
+  return { success: true, jobId };
 }
 
 // ── Auto-start when run directly ──

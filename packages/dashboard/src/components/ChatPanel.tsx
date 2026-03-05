@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect, useCallback, type KeyboardEvent } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { AgentId, AgentNode } from '../types/index.js';
 import { sendChatMessage } from '../api/client.js';
 
@@ -115,7 +117,16 @@ export default function ChatPanel({ node, onClose }: Props) {
       background: '#1e293b',
       borderLeft: `3px solid ${node.color}`,
       overflow: 'hidden',
-    }}>
+      userSelect: 'text',
+      WebkitUserSelect: 'text',
+    }}
+    onPointerDownCapture={(e) => e.stopPropagation()}
+    onMouseDownCapture={(e) => e.stopPropagation()}
+    onKeyDownCapture={(e) => {
+      e.stopPropagation();
+    }}
+    onContextMenu={(e) => e.stopPropagation()}
+    >
       {/* Header */}
       <div style={{
         display: 'flex',
@@ -183,8 +194,11 @@ export default function ChatPanel({ node, onClose }: Props) {
               color: msg.error ? '#fca5a5' : '#e2e8f0',
               fontSize: '13px',
               lineHeight: '1.5',
-              whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
+              userSelect: 'text',
+              WebkitUserSelect: 'text',
+              cursor: 'text',
+              ...(msg.role === 'user' ? { whiteSpace: 'pre-wrap' as const } : {}),
             }}>
               {msg.loading ? (
                 <span style={{ display: 'inline-flex', gap: '4px', padding: '4px 0' }}>
@@ -192,7 +206,40 @@ export default function ChatPanel({ node, onClose }: Props) {
                   <Dot delay={150} color={node.color} />
                   <Dot delay={300} color={node.color} />
                 </span>
-              ) : msg.text}
+              ) : msg.role === 'user' ? msg.text : (
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    p: ({ children }) => <p style={{ margin: '0 0 8px 0' }}>{children}</p>,
+                    strong: ({ children }) => <strong style={{ color: '#f8fafc', fontWeight: 700 }}>{children}</strong>,
+                    em: ({ children }) => <em style={{ color: '#cbd5e1' }}>{children}</em>,
+                    h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 700, margin: '12px 0 6px', color: '#f1f5f9' }}>{children}</h1>,
+                    h2: ({ children }) => <h2 style={{ fontSize: '16px', fontWeight: 700, margin: '10px 0 4px', color: '#f1f5f9' }}>{children}</h2>,
+                    h3: ({ children }) => <h3 style={{ fontSize: '14px', fontWeight: 700, margin: '8px 0 4px', color: '#f1f5f9' }}>{children}</h3>,
+                    ul: ({ children }) => <ul style={{ margin: '4px 0', paddingLeft: '20px' }}>{children}</ul>,
+                    ol: ({ children }) => <ol style={{ margin: '4px 0', paddingLeft: '20px' }}>{children}</ol>,
+                    li: ({ children }) => <li style={{ margin: '2px 0' }}>{children}</li>,
+                    table: ({ children }) => (
+                      <div style={{ overflowX: 'auto', margin: '8px 0' }}>
+                        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '12px' }}>{children}</table>
+                      </div>
+                    ),
+                    thead: ({ children }) => <thead style={{ background: '#1e293b' }}>{children}</thead>,
+                    th: ({ children }) => <th style={{ border: '1px solid #475569', padding: '6px 10px', textAlign: 'left', fontWeight: 700, color: '#e2e8f0', whiteSpace: 'nowrap' }}>{children}</th>,
+                    td: ({ children }) => <td style={{ border: '1px solid #475569', padding: '5px 10px', color: '#cbd5e1' }}>{children}</td>,
+                    code: ({ className, children }) => {
+                      const isBlock = className?.startsWith('language-');
+                      return isBlock
+                        ? <pre style={{ background: '#0f172a', padding: '10px 12px', borderRadius: '6px', overflowX: 'auto', margin: '6px 0', fontSize: '12px', lineHeight: 1.5 }}><code style={{ color: '#a5f3fc' }}>{children}</code></pre>
+                        : <code style={{ background: '#0f172a', padding: '2px 5px', borderRadius: '3px', fontSize: '12px', color: '#a5f3fc' }}>{children}</code>;
+                    },
+                    pre: ({ children }) => <>{children}</>,
+                    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #475569', margin: '10px 0' }} />,
+                    a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: '#60a5fa', textDecoration: 'underline' }}>{children}</a>,
+                    blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #475569', margin: '6px 0', paddingLeft: '12px', color: '#94a3b8' }}>{children}</blockquote>,
+                  }}
+                >{msg.text}</ReactMarkdown>
+              )}
             </div>
           </div>
         ))}
@@ -231,6 +278,8 @@ export default function ChatPanel({ node, onClose }: Props) {
               outline: 'none',
               maxHeight: '120px',
               lineHeight: '1.4',
+              userSelect: 'text',
+              WebkitUserSelect: 'text',
             }}
             onInput={(e) => {
               const el = e.currentTarget;

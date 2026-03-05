@@ -294,6 +294,64 @@ export async function fetchQuorumSnapshot(
 }
 
 /**
+ * resultsdata.php — Consolidated voting results endpoint.
+ * Returns asamblea, pregunta, quorum, consolidado, detallado, novotan, and snapshot
+ * in a single HTTP GET call. Preferred over calling services 1012 + 1002 + 62 separately.
+ *
+ * @param idAsamblea - Assembly ID
+ * @param idPregunta - Question ID (optional; if omitted, returns active or last question)
+ */
+export async function fetchResultsData(
+  idAsamblea: number,
+  idPregunta?: number,
+): Promise<{
+  asamblea: Record<string, unknown> | null;
+  pregunta: Record<string, unknown> | null;
+  quorum: Record<string, unknown> | null;
+  consolidado: Record<string, unknown>[];
+  detallado: Record<string, unknown>[];
+  novotan: Record<string, unknown>[];
+  snapshot?: Record<string, unknown> | null;
+}> {
+  const config = getConfig();
+  const baseUrl = config.apiUrl.replace(/tecnor2\.php$/, 'resultsdata.php');
+  const params: Record<string, string> = {
+    a: String(idAsamblea),
+    t: config.apiKey,  // CH253864
+  };
+  if (idPregunta != null) {
+    params.p = String(idPregunta);
+  }
+
+  await waitForSlot();
+
+  const url = `${baseUrl}?${new URLSearchParams(params).toString()}`;
+  logger.info('Fetching resultsdata.php', { idAsamblea, idPregunta });
+
+  try {
+    const response = await axios.get(url, { timeout: 30_000 });
+    const data = response.data;
+    return {
+      asamblea: data.asamblea || null,
+      pregunta: data.pregunta || null,
+      quorum: data.quorum || null,
+      consolidado: Array.isArray(data.consolidado) ? data.consolidado : [],
+      detallado: Array.isArray(data.detallado) ? data.detallado : [],
+      novotan: Array.isArray(data.novotan) ? data.novotan : [],
+      snapshot: data.snapshot || null,
+    };
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      logger.error('fetchResultsData failed', {
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+    }
+    throw error;
+  }
+}
+
+/**
  * Service 8 — Administrator info.
  */
 export async function fetchAdminInfo(): Promise<Record<string, unknown>> {
@@ -358,26 +416,37 @@ export function mapAttendance(rawData: unknown): AttendanceRecord[] {
 }
 
 /**
- * Maps aggregated voting results from service 1012
+ * Maps aggregated voting results from service 1012 / DB query
  * into a VotingSummary. Needs the question metadata to fill the header.
+ *
+ * @param quorumAtClose - Total coefficient % present when the question was closed
+ *   (from `quorumRespuestas.quorum`). Used to compute each option's
+ *   `attendeePct` as `(optionCoeff / quorumAtClose) * 100`, reproducing
+ *   the relative percentages at the moment the question was closed.
  */
 export function mapVotingResults(
   questionOrRaw: Record<string, unknown>,
   results?: Record<string, unknown>[],
+  quorumAtClose?: number,
 ): VotingSummary {
   // If called with two args (new API), use structured mapping
   if (results) {
     const opciones = Number(questionOrRaw.opciones || 1);
     return {
       questionId: String(questionOrRaw.idPregunta || ''),
-      questionText: String(questionOrRaw.encabezadoPregunta || ''),
+      questionText: String(questionOrRaw.encabezadoPregunta || questionOrRaw.texto || ''),
       questionType: opciones > 1 ? QuestionType.MULTI_CHOICE : QuestionType.SINGLE_CHOICE,
-      options: results.map((r) => ({
-        label: String(r.texto || ''),
-        coefficientPct: Number(r.coeficiente || 0),
-        attendeePct: 0,
-        nominal: Number(r.nominal || 0),
-      })),
+      options: results.map((r) => {
+        const coeff = Number(r.coeficiente || 0);
+        return {
+          label: String(r.texto || ''),
+          coefficientPct: coeff,
+          attendeePct: quorumAtClose && quorumAtClose > 0
+            ? (coeff / quorumAtClose) * 100
+            : 0,
+          nominal: Number(r.nominal || 0),
+        };
+      }),
     };
   }
 
@@ -385,7 +454,7 @@ export function mapVotingResults(
   const data = questionOrRaw;
   return {
     questionId: String(data.idPregunta || data.pregunta_id || data.questionId || ''),
-    questionText: String(data.encabezadoPregunta || data.texto_pregunta || data.questionText || ''),
+    questionText: String(data.encabezadoPregunta || data.texto || data.texto_pregunta || data.questionText || ''),
     questionType: Number(data.opciones || 1) > 1 ? QuestionType.MULTI_CHOICE : QuestionType.SINGLE_CHOICE,
     options: (() => {
       const opts = data.opciones || data.options;
@@ -443,6 +512,36 @@ export function mapVotingDetail(
         time: String(v.hora || v.time || ''),
       }));
     })(),
+  };
+}
+
+/**
+ * Maps voting detail from resultsdata.php `detallado` array.
+ * Field names: Torre, Unidad, Propietarios, Respuesta, coeficiente, nominal, FechaHora, ip
+ * This is preferred over mapVotingDetail (service 1002) because it includes owner names.
+ */
+export function mapVotingDetailFromResultsData(
+  questionId: string,
+  detallado: Record<string, unknown>[],
+): VotingDetail {
+  return {
+    questionId,
+    votes: detallado.map((v) => {
+      const tower = String(v.Torre || v.torre || '');
+      const unit = String(v.Unidad || v.unidad || v.idunidad || '');
+      // Build display unit: if tower is present and unit doesn't already include it, prefix it
+      const displayUnit = tower && !unit.includes(tower) ? `${tower}${unit}` : unit;
+      return {
+        unit: displayUnit,
+        ownerName: String(v.Propietarios || v.propietarios || v.nombrePropietario1 || ''),
+        delegateName: '',  // Not in detallado — enriched by caller from attendance
+        response: String(v.Respuesta || v.respuesta || v.texto || ''),
+        coefficientOwner: Number(v.coeficiente || 0),
+        coefficientQuorum: Number(v.coeficienteQuorum || v.coeficiente || 0),
+        nominal: Number(v.nominal || 0),
+        time: String(v.FechaHora || v.fechahora || v.fhRespuesta || ''),
+      };
+    }),
   };
 }
 

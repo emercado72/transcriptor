@@ -242,6 +242,37 @@ export async function gwDriveCreateFolder(name: string, parentId?: string): Prom
   };
 }
 
+/** Download a file from Drive to a local path */
+export async function gwDriveDownloadFile(fileId: string, destPath: string): Promise<void> {
+  const { createWriteStream } = await import('node:fs');
+  const { mkdir } = await import('node:fs/promises');
+  const { dirname } = await import('node:path');
+  const { drive } = initGoogleWorkspace();
+  logger.info(`Drive: downloading file ${fileId} → ${destPath}`);
+
+  // Ensure destination directory exists
+  await mkdir(dirname(destPath), { recursive: true });
+
+  const response = await drive.files.get(
+    { fileId, alt: 'media' },
+    { responseType: 'stream' },
+  );
+
+  return new Promise((resolve, reject) => {
+    const dest = createWriteStream(destPath);
+    (response.data as NodeJS.ReadableStream)
+      .pipe(dest)
+      .on('finish', () => {
+        logger.info(`Drive: download complete → ${destPath}`);
+        resolve();
+      })
+      .on('error', (err) => {
+        logger.error(`Drive: download failed for ${fileId}`, err);
+        reject(err);
+      });
+  });
+}
+
 // ═══════════════════════════════════════════
 //  DOCS
 // ═══════════════════════════════════════════

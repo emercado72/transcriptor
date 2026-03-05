@@ -5,6 +5,11 @@ import Toolbar from './components/Toolbar.js';
 import ChatPanel from './components/ChatPanel.js';
 import ConfigPanel from './components/ConfigPanel.js';
 import QueuePanel from './components/QueuePanel.js';
+import ProcessingQueuePanel from './components/ProcessingQueuePanel.js';
+import LinaFanneryQueuePanel from './components/LinaFanneryQueuePanel.js';
+import GloriaQueuePanel from './components/GloriaQueuePanel.js';
+import KanbanBoard from './components/KanbanBoard.js';
+import ReviewPage from './components/ReviewPage.js';
 import ContextMenu from './components/ContextMenu.js';
 import type { ContextMenuAction } from './components/ContextMenu.js';
 import {
@@ -84,14 +89,17 @@ export default function App() {
   const [selectedNode, setSelectedNode] = useState<AgentId | null>(null);
   const [chatAgent, setChatAgent] = useState<AgentId | null>(null);
 
-  // Side panel mode: 'chat' | 'config' | 'queue'
-  type SidePanelMode = 'chat' | 'config' | 'queue';
+  // Side panel mode: 'chat' | 'config' | 'queue' | 'kanban'
+  type SidePanelMode = 'chat' | 'config' | 'queue' | 'kanban';
   const [sidePanelMode, setSidePanelMode] = useState<SidePanelMode>('chat');
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{
     x: number; y: number; agentId: AgentId;
   } | null>(null);
+
+  // Review page state
+  const [reviewJobId, setReviewJobId] = useState<string | null>(null);
 
   // ── Agent data ──
   const [statuses, setStatuses] = useState<Record<AgentId, AgentStatus>>(mockStatuses);
@@ -180,6 +188,16 @@ export default function App() {
     }
   }, []);
 
+  // Listen for custom review events from child components
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ jobId: string }>).detail;
+      if (detail?.jobId) setReviewJobId(detail.jobId);
+    };
+    window.addEventListener('open-review', handler);
+    return () => window.removeEventListener('open-review', handler);
+  }, []);
+
   // Right-click on a node → context menu
   const handleNodeContextMenu = useCallback((id: AgentId, x: number, y: number) => {
     setContextMenu({ x, y, agentId: id });
@@ -216,9 +234,63 @@ export default function App() {
         },
       },
     ] : []),
+    ...(['chucho', 'jaime'].includes(contextMenu.agentId) ? [
+      {
+        label: 'View Queue',
+        icon: '📊',
+        onClick: () => {
+          setChatAgent(contextMenu.agentId);
+          setSelectedNode(contextMenu.agentId);
+          setSidePanelMode('queue');
+        },
+      },
+    ] : []),
+    ...(['lina', 'fannery'].includes(contextMenu.agentId) ? [
+      {
+        label: 'View Queue',
+        icon: contextMenu.agentId === 'lina' ? '✍️' : '📄',
+        onClick: () => {
+          setChatAgent(contextMenu.agentId);
+          setSelectedNode(contextMenu.agentId);
+          setSidePanelMode('queue');
+        },
+      },
+    ] : []),
+    ...(contextMenu.agentId === 'gloria' ? [
+      {
+        label: 'View Queue',
+        icon: '🔍',
+        onClick: () => {
+          setChatAgent(contextMenu.agentId);
+          setSelectedNode(contextMenu.agentId);
+          setSidePanelMode('queue');
+        },
+      },
+    ] : []),
+    ...(contextMenu.agentId === 'supervisor' ? [
+      {
+        label: 'View Kanban',
+        icon: '📋',
+        onClick: () => {
+          setChatAgent(contextMenu.agentId);
+          setSelectedNode(contextMenu.agentId);
+          setSidePanelMode('kanban');
+        },
+      },
+    ] : []),
   ] : [];
 
   return (
+    <>
+      {/* Full-screen Review Page overlay */}
+      {reviewJobId && (
+        <ReviewPage
+          jobId={reviewJobId}
+          onBack={() => setReviewJobId(null)}
+        />
+      )}
+
+      {!reviewJobId && (
     <div style={{
       display: 'flex',
       flexDirection: 'column',
@@ -293,6 +365,36 @@ export default function App() {
             onSwitchToConfig={() => setSidePanelMode('config')}
           />
         )}
+        {chatNodeData && sidePanelMode === 'queue' && (chatAgent === 'chucho' || chatAgent === 'jaime') && (
+          <ProcessingQueuePanel
+            node={chatNodeData}
+            agentId={chatAgent}
+            onClose={() => setChatAgent(null)}
+            onSwitchToChat={() => setSidePanelMode('chat')}
+          />
+        )}
+        {chatNodeData && sidePanelMode === 'queue' && (chatAgent === 'lina' || chatAgent === 'fannery') && (
+          <LinaFanneryQueuePanel
+            node={chatNodeData}
+            agentId={chatAgent}
+            onClose={() => setChatAgent(null)}
+            onSwitchToChat={() => setSidePanelMode('chat')}
+          />
+        )}
+        {chatNodeData && sidePanelMode === 'queue' && chatAgent === 'gloria' && (
+          <GloriaQueuePanel
+            node={chatNodeData}
+            onClose={() => setChatAgent(null)}
+            onSwitchToChat={() => setSidePanelMode('chat')}
+          />
+        )}
+        {chatNodeData && sidePanelMode === 'kanban' && chatAgent === 'supervisor' && (
+          <KanbanBoard
+            node={chatNodeData}
+            onClose={() => setChatAgent(null)}
+            onSwitchToChat={() => setSidePanelMode('chat')}
+          />
+        )}
       </div>
 
       {/* Context menu */}
@@ -306,5 +408,7 @@ export default function App() {
         />
       )}
     </div>
+      )}
+    </>
   );
 }

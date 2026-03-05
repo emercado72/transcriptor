@@ -13,6 +13,10 @@
     "start": "node dist/reviewServer.js"
   },
   "dependencies": {
+    "@transcriptor/chucho": "workspace:*",
+    "@transcriptor/fannery": "workspace:*",
+    "@transcriptor/jaime": "workspace:*",
+    "@transcriptor/lina": "workspace:*",
     "@transcriptor/robinson": "workspace:*",
     "@transcriptor/shared": "workspace:*",
     "@transcriptor/supervisor": "workspace:*",

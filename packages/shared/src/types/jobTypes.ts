@@ -40,6 +40,10 @@ export interface PipelineJob {
   stages: StageStatus[];
   createdAt: string;
   updatedAt: string;
+  /** Tecnoreuniones assembly ID (resolved from folder/file name) */
+  idAsamblea?: number;
+  /** Client name from Tecnoreuniones (e.g. "PORTAL VALPARAISO") */
+  clientName?: string;
 }
 
 export interface QueueStats {

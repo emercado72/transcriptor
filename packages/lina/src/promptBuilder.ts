@@ -78,6 +78,35 @@ export function buildExampleBlock(sectionStyle: SectionStyle): string {
   return examples[sectionStyle] ? `\n## Ejemplo de salida:\n${examples[sectionStyle]}` : '';
 }
 
+export function buildSpeakerRosterBlock(
+  identifiedSpeakers: Record<string, string>,
+  attendanceRoster: { unit: string; tower: string; ownerName: string; delegateName: string }[],
+): string {
+  const parts: string[] = [];
+
+  // Reconciled speaker identities (from diarization + roster matching)
+  const speakerEntries = Object.entries(identifiedSpeakers);
+  if (speakerEntries.length > 0) {
+    parts.push('\n## Hablantes Identificados (del sistema de diarización)');
+    parts.push('Estos son los hablantes que el sistema de reconocimiento de voz ha identificado. Usa estos nombres y unidades en la redacción:');
+    for (const [label, name] of speakerEntries) {
+      parts.push(`- **${label}** → ${name}`);
+    }
+  }
+
+  // Full attendance roster for context
+  if (attendanceRoster.length > 0) {
+    parts.push('\n## Roster de Asistentes (datos oficiales de Tecnoreuniones)');
+    parts.push('Lista completa de propietarios asistentes a la asamblea. Usa esta información para resolver nombres y unidades en el texto transcrito:');
+    for (const entry of attendanceRoster) {
+      const delegate = entry.delegateName ? ` (Delegado: ${entry.delegateName})` : '';
+      parts.push(`- Torre ${entry.tower}, Unidad ${entry.unit}: **${entry.ownerName}**${delegate}`);
+    }
+  }
+
+  return parts.length > 0 ? parts.join('\n') : '';
+}
+
 const DEFAULT_SUPER_PROMPT = `
 Eres un redactor profesional de actas de asamblea de propiedad horizontal en Colombia. 
 Tu trabajo es transformar transcripciones de audio en narrativa formal legal conforme a la Ley 675 de 2001.
@@ -85,10 +114,50 @@ Tu trabajo es transformar transcripciones de audio en narrativa formal legal con
 Reglas:
 1. Usa lenguaje formal y jurídico colombiano
 2. Mantén la objetividad — no interpretes, narra los hechos
-3. Identifica correctamente a los propietarios por nombre y unidad
+3. Identifica correctamente a los propietarios por nombre completo y unidad usando el roster de asistentes proporcionado
 4. Los resultados de votaciones deben reflejar exactamente los datos de Robinson
-5. No inventes información — si algo no está claro, señálalo con [VERIFICAR]
+5. Si un hablante no puede identificarse con certeza desde el roster, usa el nombre parcial del transcript y la unidad más probable — NO uses [VERIFICAR] si hay datos en el roster que coincidan
 6. Usa el formato y estilo indicado para cada tipo de sección
 7. Las cifras de coeficientes y quórum deben ser exactas
 8. Respeta la terminología del glosario proporcionado
+9. Los nombres propios de personas SIEMPRE se escriben en MAYÚSCULAS SOSTENIDAS (ejemplo: "El señor JUAN CARLOS PÉREZ GARCÍA, propietario de la unidad 301…"). Esto aplica para todos los nombres, apellidos y nombres compuestos que aparezcan en el acta
 `.trim();
+
+
+/**
+ * Build a block listing all Robinson voting questions so Lina can insert
+ * explicit markers [VOTACION PREGUNTA N] in the redacted text at the exact
+ * point where each vote was announced. Fannery scans for these markers and
+ * replaces them with the actual voting tables, eliminating keyword matching.
+ */
+export function buildVotingQuestionsBlock(questionList: import('@transcriptor/shared').VotingSummary[]): string {
+  if (!questionList || questionList.length === 0) return '';
+
+  // Filter warmup questions (Q0 and icebreakers) — same logic as markdownParser
+  const votable = questionList.filter((q) => {
+    if (Number(q.questionId) === 0) return false;
+    const t = q.questionText.toUpperCase();
+    if (t.includes('AMANECIO') || t.includes('AMANECIÓ')) return false;
+    if (/(?<![A-ZÁÉÍÓÚÑ])PRUEBA(?![A-ZÁÉÍÓÚÑ])/.test(t)) return false;
+    if (/(?<![A-ZÁÉÍÓÚÑ])TEST(?![A-ZÁÉÍÓÚÑ])/.test(t)) return false;
+    return true;
+  });
+
+  if (votable.length === 0) return '';
+
+  const lines = votable
+    .map((q) => `- **Pregunta ${q.questionId}:** ${q.questionText.trim()}`)
+    .join('\n');
+
+  return `## Preguntas de Votacion Registradas por Robinson
+Durante la redaccion, cuando el texto transcrito indique que se realizo una votacion, inserta el marcador exacto en el punto donde se anuncio la apertura o el resultado de esa votacion:
+
+> [VOTACION PREGUNTA N]
+
+Donde N es el numero de la pregunta en la lista. Fannery reemplazara ese marcador con la tabla de resultados automaticamente. Usa tu criterio para mapear la descripcion oral a la pregunta correcta (el texto de la transcripcion parafrasea la pregunta original).
+
+Lista de preguntas en orden cronologico:
+${lines}
+
+REGLA CRITICA: Inserta el marcador dentro del parrafo donde se realizo la votacion, NO al final del documento.`.trim();
+}
