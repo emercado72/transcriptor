@@ -36,23 +36,37 @@ function nextId(): string {
   return `msg-${++msgCounter}-${Date.now()}`;
 }
 
+// Persist chat history across panel switches (module-level, survives unmount)
+const chatHistoryMap = new Map<AgentId, ChatMessage[]>();
+
 export default function ChatPanel({ node, onClose }: Props) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    return chatHistoryMap.get(node.id) || [{
+      id: nextId(), role: 'agent', text: AGENT_GREETINGS[node.id], timestamp: new Date(),
+    }];
+  });
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const prevAgentRef = useRef<AgentId | null>(null);
 
-  // Reset chat when agent changes
+  // Persist chat history on every message change
+  useEffect(() => {
+    if (messages.length > 0) chatHistoryMap.set(node.id, messages);
+  }, [messages, node.id]);
+
+  // Load history when switching agents
   useEffect(() => {
     if (prevAgentRef.current !== node.id) {
-      setMessages([{
-        id: nextId(),
-        role: 'agent',
-        text: AGENT_GREETINGS[node.id],
-        timestamp: new Date(),
-      }]);
+      const saved = chatHistoryMap.get(node.id);
+      if (saved && saved.length > 0) {
+        setMessages(saved);
+      } else {
+        setMessages([{
+          id: nextId(), role: 'agent', text: AGENT_GREETINGS[node.id], timestamp: new Date(),
+        }]);
+      }
       setInput('');
       prevAgentRef.current = node.id;
     }

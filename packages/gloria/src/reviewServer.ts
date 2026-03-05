@@ -1688,12 +1688,17 @@ Respond ONLY with valid JSON.`,
 
         setRegistryRedis(getRedisClient());
         const manifests = buildManifests(RUNTIME_MODE);
+        logger.info(`Registering ${manifests.length} agent manifest(s)...`);
         const stopHeartbeats: (() => void)[] = [];
         for (const manifest of manifests) {
-          await registerAgent(manifest);
-          stopHeartbeats.push(startHeartbeatLoop(manifest.agentId, 30_000));
+          try {
+            await registerAgent(manifest);
+            stopHeartbeats.push(startHeartbeatLoop(manifest.agentId, 30_000));
+          } catch (regErr) {
+            logger.error(`Failed to register ${manifest.agentId}: ${(regErr as Error).message}`);
+          }
         }
-        logger.info(`Registered ${manifests.length} agent(s) in Agent Registry`);
+        logger.info(`Registered ${stopHeartbeats.length}/${manifests.length} agent(s) in Agent Registry`);
 
         // Cleanup on shutdown
         process.on('SIGTERM', () => { stopHeartbeats.forEach(fn => fn()); });
@@ -2613,6 +2618,24 @@ const SUPERVISOR_TOOLS: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'call_agent_tool',
+      description: 'Invoke any registered agent tool by calling its HTTP endpoint. Use the Agent Registry (in your system prompt) to know which agents and tools are available. For example, to provision a GPU worker, call Fisher\'s provision tool. To scan Drive, call Yulieth\'s drive-scan tool. This is your way to DELEGATE work to other agents — do NOT just describe what should be done, actually call the tool.',
+      parameters: {
+        type: 'object',
+        properties: {
+          agentId: { type: 'string', description: 'The agent to call (e.g. "fisher", "yulieth", "jaime")' },
+          toolName: { type: 'string', description: 'The tool name from the registry (e.g. "provision", "drive-scan", "get-progress")' },
+          method: { type: 'string', description: 'HTTP method', enum: ['GET', 'POST', 'PUT', 'DELETE'] },
+          endpoint: { type: 'string', description: 'The endpoint path from the registry (e.g. "/api/agents/fisher/provision")' },
+          body: { type: 'object', description: 'Request body for POST/PUT requests. Omit for GET.' },
+        },
+        required: ['agentId', 'toolName', 'endpoint', 'method'],
+      },
+    },
+  },
 ];
 
 // ── Tool Executor (Robinson) ──
@@ -3041,6 +3064,35 @@ async function executeSupervisorTool(name: string, args: Record<string, unknown>
         return JSON.stringify({ message: `Notification sent for job ${jobId}: "${message}"` });
       }
 
+      case 'call_agent_tool': {
+        const agentId = args.agentId as string;
+        const toolName = args.toolName as string;
+        const method = (args.method as string) || 'GET';
+        const endpoint = args.endpoint as string;
+        const body = args.body as Record<string, unknown> | undefined;
+
+        logger.info(`Supervisor delegating to ${agentId}.${toolName}: ${method} ${endpoint}`);
+
+        const fetchOpts: RequestInit = {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+        };
+        if (body && (method === 'POST' || method === 'PUT')) {
+          fetchOpts.body = JSON.stringify(body);
+        }
+
+        const baseUrl = 'http://localhost:' + (process.env.GLORIA_PORT || process.env.PORT || '3001');
+        const res = await fetch(baseUrl + endpoint, fetchOpts);
+        const data = await res.json().catch(() => ({ status: res.status, statusText: res.statusText }));
+
+        return JSON.stringify({
+          agent: agentId,
+          tool: toolName,
+          status: res.status,
+          result: data,
+        }, null, 2);
+      }
+
       default:
         return JSON.stringify({ error: `Unknown supervisor tool: ${name}` });
     }
@@ -3158,6 +3210,7 @@ Your role: You coordinate the entire transcription pipeline — from audio detec
 - **get_pipeline_overview**: High-level overview (active, completed, failed, queued counts + recent jobs)
 - **get_agent_statistics**: Processing stats per agent (last 30 days and today)
 - **send_notification**: Send a notification message for a pipeline job
+- **call_agent_tool**: DELEGATE work to any registered agent by calling their HTTP endpoint. Use this to invoke Fisher, Yulieth, Jaime, Lina, Fannery, Robinson, or any other agent. Check the Live Agent Registry (below) for available tools and endpoints.
 
 ## CRITICAL RULES
 1. **ALWAYS call ALL the tools you need in a SINGLE response using parallel tool calls.** NEVER call them one by one.
@@ -3166,8 +3219,9 @@ Your role: You coordinate the entire transcription pipeline — from audio detec
 4. Present results in Markdown with tables, bold labels, and bullet points.
 5. When asked about system status, always call **get_pipeline_overview** and **get_active_pipelines** together.
 6. When asked about agent performance, call **get_agent_statistics**.
-7. Be concise and status-focused in your responses.
-8. You can respond in Spanish or English depending on the user's language.`,
+7. **When the user asks you to DO something (provision a server, scan Drive, reprocess a document, etc.), USE call_agent_tool to actually do it. Do NOT just explain what should be done — EXECUTE the action.**
+8. The Live Agent Registry at the end of this prompt lists every agent, their capabilities, and their tool endpoints. Use this information to decide WHICH agent to call and HOW.
+9. You can respond in Spanish or English depending on the user's language.`,
 
   yulieth: `You are **Yulieth**, the Drive Watcher & Job Queue Agent in the Transcriptor multi-agent system for Colombian property assembly (propiedad horizontal) minutes.
 
