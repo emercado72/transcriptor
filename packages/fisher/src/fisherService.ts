@@ -44,6 +44,13 @@ export function initFisher(): linode.FisherConfig {
     labelPrefix: process.env.FISHER_LABEL_PREFIX || 'transcriptor-gpu',
   };
   if (!fisherConfig.apiToken) logger.warn('LINODE_API_TOKEN not set');
+
+  // When heartbeat declares a worker down, reset Fisher state
+  monitor.onWorkerDown((instanceId, label, failures) => {
+    logger.error('Worker ' + label + ' (' + instanceId + ') is down after ' + failures + ' missed heartbeats — resetting to idle');
+    workerInfo = { instanceId: null, ip: null, label: null, state: 'idle', currentJobId: null, createdAt: null, error: null };
+  });
+
   logger.info('Fisher initialized: ' + fisherConfig.region + ' / ' + fisherConfig.instanceType);
   return fisherConfig;
 }
