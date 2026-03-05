@@ -15,6 +15,9 @@ import type { AgentManifest, AgentRuntimeStatus } from '../types/agentRegistry.j
 const logger = createLogger('agent-registry');
 const MANIFEST_PREFIX = 'agent:manifest:';
 const MANIFEST_SET = 'agent:manifests';
+
+// Store manifests locally so heartbeat can re-register if Redis expires
+const localManifests = new Map<string, AgentManifest>();
 const HEARTBEAT_TTL = 120; // seconds — manifest expires if no heartbeat in 2 min
 
 let redisClient: any = null;
@@ -40,8 +43,8 @@ export async function registerAgent(manifest: AgentManifest): Promise<void> {
   manifest.status = 'online';
 
   await redis.set(key, JSON.stringify(manifest));
-  await redis.expire(key, HEARTBEAT_TTL);
   await redis.sadd(MANIFEST_SET, manifest.agentId);
+  localManifests.set(manifest.agentId, manifest);
 
   logger.info(`Agent registered: ${manifest.agentId} (${manifest.tools.length} tools, ${manifest.capabilities.length} capabilities)`);
 }
@@ -53,15 +56,26 @@ export async function registerAgent(manifest: AgentManifest): Promise<void> {
 export async function heartbeat(agentId: string, status?: AgentRuntimeStatus): Promise<void> {
   const redis = getRedis();
   const key = MANIFEST_PREFIX + agentId;
-  const raw = await redis.get(key);
-  if (!raw) return;
+  let raw = await redis.get(key);
+
+  // Re-register if expired
+  if (!raw) {
+    const local = localManifests.get(agentId);
+    if (local) {
+      local.lastHeartbeat = new Date().toISOString();
+      if (status) local.status = status;
+      await redis.set(key, JSON.stringify(local));
+      await redis.sadd(MANIFEST_SET, agentId);
+      return;
+    }
+    return;
+  }
 
   const manifest = JSON.parse(raw) as AgentManifest;
   manifest.lastHeartbeat = new Date().toISOString();
   if (status) manifest.status = status;
 
   await redis.set(key, JSON.stringify(manifest));
-  await redis.expire(key, HEARTBEAT_TTL);
 }
 
 /**
