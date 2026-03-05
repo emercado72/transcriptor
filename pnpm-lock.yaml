@@ -107,6 +107,9 @@ importers:
       '@transcriptor/fannery':
         specifier: workspace:*
         version: link:../fannery
+      '@transcriptor/fisher':
+        specifier: workspace:*
+        version: link:../fisher
       '@transcriptor/jaime':
         specifier: workspace:*
         version: link:../jaime

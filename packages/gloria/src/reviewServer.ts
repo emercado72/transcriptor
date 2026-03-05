@@ -60,8 +60,12 @@ export function startServer(port?: number): void {
   // ── Routes ──
 
   // Health check
+  // Runtime mode: 'local' (Mac Mini, Fisher active) or 'gpu-worker' (remote GPU, no Fisher)
+  const RUNTIME_MODE = process.env.RUNTIME_MODE || 'local';
+  logger.info(`Runtime mode: ${RUNTIME_MODE}`);
+
   app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok', agent: 'gloria', timestamp: new Date().toISOString() });
+    res.json({ status: 'ok', agent: 'gloria', mode: RUNTIME_MODE, timestamp: new Date().toISOString() });
   });
 
   // List drafts pending review
@@ -712,6 +716,78 @@ export function startServer(port?: number): void {
       res.status(500).json({ error: (err as Error).message });
     }
   });
+
+  // -- Fisher GPU Worker Endpoints (local mode only) --
+  if (RUNTIME_MODE === 'local') {
+    let fisher: typeof import('@transcriptor/fisher') | null = null;
+
+    const getFisher = async () => {
+      if (!fisher) {
+        fisher = await import('@transcriptor/fisher');
+        fisher.initFisher();
+      }
+      return fisher;
+    };
+
+    app.get('/api/agents/fisher/status', async (_req, res) => {
+      try {
+        const f = await getFisher();
+        res.json(f.getStatus());
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    });
+
+    app.post('/api/agents/fisher/provision', async (_req, res) => {
+      try {
+        const f = await getFisher();
+        const ip = await f.provisionWorker();
+        res.json({ ok: true, ip });
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    });
+
+    app.post('/api/agents/fisher/process-folder', async (req, res) => {
+      try {
+        const { driveFolderId, subfolderId } = req.body;
+        if (!driveFolderId || !subfolderId) {
+          return res.status(400).json({ error: 'driveFolderId and subfolderId required' });
+        }
+        const f = await getFisher();
+        res.json({ ok: true, message: 'Fisher processing started' });
+        f.processFolder(driveFolderId, subfolderId).catch((err: Error) => {
+          logger.error('Fisher processFolder failed: ' + err.message);
+        });
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    });
+
+    app.post('/api/agents/fisher/backup-and-destroy', async (_req, res) => {
+      try {
+        const f = await getFisher();
+        const results = await f.backupAndDestroy();
+        res.json({ ok: true, backups: results });
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    });
+
+    app.post('/api/agents/fisher/destroy', async (_req, res) => {
+      try {
+        const f = await getFisher();
+        await f.destroyWorker();
+        res.json({ ok: true });
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    });
+
+    logger.info('Fisher endpoints registered (local mode)');
+  } else {
+    logger.info('Fisher endpoints skipped (gpu-worker mode)');
+  }
 
   // ══════════════════════════════════════
   //  GLORIA REVIEW ENDPOINTS

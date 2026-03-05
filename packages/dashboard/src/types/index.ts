@@ -24,7 +24,8 @@ export type AgentId =
   | 'fannery'
   | 'gloria'
   | 'robinson'
-  | 'supervisor';
+  | 'supervisor'
+  | 'fisher';
 
 export interface AgentStatus {
   agentId: AgentId;

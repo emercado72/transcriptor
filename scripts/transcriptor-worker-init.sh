@@ -201,6 +201,7 @@ RestartSec=5
 StandardOutput=file:/tmp/gloria.log
 StandardError=file:/tmp/gloria.log
 Environment=NODE_ENV=production
+Environment=RUNTIME_MODE=gpu-worker
 
 [Install]
 WantedBy=multi-user.target

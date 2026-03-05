@@ -28,6 +28,7 @@ const AGENT_GREETINGS: Record<AgentId, string> = {
   fannery:    '📄 I assemble the final .docx document. Ask me about document structure, tables, page layout, or template rendering.',
   gloria:     '✅ I manage review and approval. Ask me about draft status, flagged sections, or approval workflows.',
   supervisor: '🎛️ I orchestrate the entire pipeline. Ask me about job states, pipeline progress, error recovery, or agent coordination.',
+  fisher:     '🐟 I provision and manage GPU workers on Linode. Ask me about worker status, provisioning, backup, or cost.',
 };
 
 let msgCounter = 0;

@@ -10,6 +10,7 @@ const DEFAULT_POSITIONS: Record<AgentId, { x: number; y: number }> = {
   fannery:    { x: 900,  y: 200 },
   gloria:     { x: 1100, y: 200 },
   supervisor: { x: 500,  y: 400 },
+  fisher:     { x: 300,  y: 400 },
 };
 
 export function getDefaultNodes(): AgentNode[] {
@@ -22,6 +23,7 @@ export function getDefaultNodes(): AgentNode[] {
     { id: 'fannery',    label: 'Fannery',    description: 'Document Assembly (.docx)',       color: '#ca8a04', icon: '📄', ...DEFAULT_POSITIONS.fannery },
     { id: 'gloria',     label: 'Gloria',     description: 'Review & Approval',              color: '#9333ea', icon: '✅', ...DEFAULT_POSITIONS.gloria },
     { id: 'supervisor', label: 'Supervisor', description: 'Pipeline Orchestrator',           color: '#475569', icon: '🎛️', ...DEFAULT_POSITIONS.supervisor },
+    { id: 'fisher',     label: 'Fisher',     description: 'GPU Worker Provisioner',          color: '#0d9488', icon: '🐟', ...DEFAULT_POSITIONS.fisher },
   ];
 }
 
@@ -42,6 +44,8 @@ export function getEdges(): AgentEdge[] {
     { from: 'supervisor', to: 'lina',       label: 'orchestrates' },
     { from: 'supervisor', to: 'fannery',    label: 'orchestrates' },
     { from: 'supervisor', to: 'gloria',     label: 'orchestrates' },
+    { from: 'fisher',     to: 'supervisor', label: 'provisions GPU workers' },
+    { from: 'fisher',     to: 'yulieth',    label: 'enqueues on remote' },
   ];
 }
 

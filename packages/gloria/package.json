@@ -15,6 +15,7 @@
   "dependencies": {
     "@transcriptor/chucho": "workspace:*",
     "@transcriptor/fannery": "workspace:*",
+    "@transcriptor/fisher": "workspace:*",
     "@transcriptor/jaime": "workspace:*",
     "@transcriptor/lina": "workspace:*",
     "@transcriptor/robinson": "workspace:*",
