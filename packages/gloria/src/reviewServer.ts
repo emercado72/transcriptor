@@ -1094,6 +1094,38 @@ Respond ONLY with valid JSON.`,
     void syncTemplateToS3();
   });
 
+  // -- Agent Registry Endpoints --
+  app.get('/api/agents/registry', async (_req, res) => {
+    try {
+      const { getAllManifests } = await import('@transcriptor/shared');
+      const manifests = await getAllManifests();
+      res.json({ agents: manifests, count: manifests.length });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.get('/api/agents/registry/summary', async (_req, res) => {
+    try {
+      const { getRegistrySummary } = await import('@transcriptor/shared');
+      const summary = await getRegistrySummary();
+      res.json({ summary });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.get('/api/agents/registry/:agentId', async (req, res) => {
+    try {
+      const { getAgentManifest } = await import('@transcriptor/shared');
+      const manifest = await getAgentManifest(req.params.agentId);
+      if (!manifest) return res.status(404).json({ error: 'Agent not found: ' + req.params.agentId });
+      res.json(manifest);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // ══════════════════════════════════════
   //  GLORIA REVIEW ENDPOINTS
   // ══════════════════════════════════════
@@ -1649,6 +1681,23 @@ Respond ONLY with valid JSON.`,
 
         // ── Start the Supervisor orchestrator event loop ──
         supervisor.startOrchestrator();
+
+        // Register all agents with the Agent Registry
+        const { setRegistryRedis, registerAgent, startHeartbeatLoop, getAllManifests, getRegistrySummary } = await import('@transcriptor/shared');
+        const { buildManifests } = await import('./agentManifests.js');
+
+        setRegistryRedis(getRedisClient());
+        const manifests = buildManifests(RUNTIME_MODE);
+        const stopHeartbeats: (() => void)[] = [];
+        for (const manifest of manifests) {
+          await registerAgent(manifest);
+          stopHeartbeats.push(startHeartbeatLoop(manifest.agentId, 30_000));
+        }
+        logger.info(`Registered ${manifests.length} agent(s) in Agent Registry`);
+
+        // Cleanup on shutdown
+        process.on('SIGTERM', () => { stopHeartbeats.forEach(fn => fn()); });
+        process.on('SIGINT', () => { stopHeartbeats.forEach(fn => fn()); });
 
         logger.info('Startup recovery complete — Supervisor orchestrator running');
       } catch (err) {
@@ -3289,9 +3338,18 @@ Be organized and detail-oriented in your responses.`,
 async function handleAgentChat(agentId: string, message: string): Promise<string> {
   logger.info(`Chat request for agent ${agentId}: ${message.substring(0, 100)}`);
 
-  const systemPrompt = AGENT_SYSTEM_PROMPTS[agentId];
+  let systemPrompt = AGENT_SYSTEM_PROMPTS[agentId];
   if (!systemPrompt) {
     return `Unknown agent: ${agentId}`;
+  }
+
+  // Inject live Agent Registry context for Supervisor
+  if (agentId === 'supervisor') {
+    try {
+      const { getRegistrySummary } = await import('@transcriptor/shared');
+      const registrySummary = await getRegistrySummary();
+      systemPrompt += '\n\n---\n\n# Live Agent Registry\n\n' + registrySummary;
+    } catch { /* registry not available */ }
   }
 
   // Robinson, Yulieth, and Supervisor get tools; other agents get pure conversation

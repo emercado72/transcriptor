@@ -44,3 +44,14 @@ export {
   type PipelineEvent,
   type PipelineEventType,
 } from './pipelineEvents.js';
+export {
+  setRegistryRedis,
+  registerAgent,
+  heartbeat,
+  updateAgentStatus,
+  getAgentManifest,
+  getAllManifests,
+  getRegistrySummary,
+  startHeartbeatLoop,
+  unregisterAgent,
+} from './agentRegistry.js';
