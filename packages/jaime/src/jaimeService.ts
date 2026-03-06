@@ -13,7 +13,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createLogger } from '@transcriptor/shared';
+import { createLogger, tokenOverlapRatio } from '@transcriptor/shared';
 import type { VotingSummary, AttendanceRecord } from '@transcriptor/shared';
 import { transcribeAudio, getTranscriptionProvider } from './transcriptionManager.js';
 import type { ScribeOptions, ScribeTranscript } from './transcriptionManager.js';
@@ -243,31 +243,96 @@ export async function processJob(
 
 /**
  * Merge multiple transcripts (from split audio) into one continuous transcript.
+ * Deduplicates utterances near chunk boundaries where overlapping speech
+ * may have been transcribed in both adjacent segments.
  */
 function mergeTranscripts(transcripts: ScribeTranscript[]): ScribeTranscript {
   if (transcripts.length === 1) return transcripts[0];
 
   let offset = 0;
-  const allUtterances = [];
-  const allText: string[] = [];
+  const allUtterances: typeof transcripts[0]['utterances'] = [];
 
-  for (const t of transcripts) {
-    for (const u of t.utterances) {
+  for (let i = 0; i < transcripts.length; i++) {
+    const t = transcripts[i];
+    let utterances = t.utterances;
+
+    // Dedup against the tail of the previous transcript
+    if (i > 0) {
+      utterances = dedupBoundaryUtterances(
+        transcripts[i - 1].utterances,
+        transcripts[i - 1].duration,
+        utterances,
+      );
+    }
+
+    for (const u of utterances) {
       allUtterances.push({
         ...u,
         startTime: u.startTime + offset,
         endTime: u.endTime + offset,
       });
     }
-    allText.push(t.text);
     offset += t.duration;
   }
 
   return {
     jobId: transcripts[0].jobId,
-    text: allText.join(' '),
+    text: allUtterances.map(u => u.text).join(' '),
     utterances: allUtterances,
     duration: offset,
     language: transcripts[0].language,
   };
+}
+
+// ── Boundary dedup helpers ──
+
+/** Seconds from each chunk boundary to check for duplicates. */
+const BOUNDARY_ZONE_S = 60;
+/** Minimum token overlap ratio to consider an utterance a duplicate. */
+const DEDUP_THRESHOLD = 0.7;
+
+import type { ScribeUtterance } from './transcriptionManager.js';
+
+/**
+ * Remove duplicate utterances near the boundary between two consecutive transcripts.
+ *
+ * Compares utterances near the END of prevTranscript (within BOUNDARY_ZONE of its duration)
+ * with utterances near the START of nextTranscript (within BOUNDARY_ZONE of time 0).
+ * Utterances in next that have high token overlap with any prev boundary utterance are dropped.
+ */
+function dedupBoundaryUtterances(
+  prevUtterances: ScribeUtterance[],
+  prevDuration: number,
+  nextUtterances: ScribeUtterance[],
+): ScribeUtterance[] {
+  const boundaryStart = prevDuration - BOUNDARY_ZONE_S;
+  const prevBoundary = prevUtterances.filter(u => u.startTime >= boundaryStart);
+
+  if (prevBoundary.length === 0) return nextUtterances;
+
+  const duplicateIndices = new Set<number>();
+
+  for (let ni = 0; ni < nextUtterances.length; ni++) {
+    const nextU = nextUtterances[ni];
+    if (nextU.startTime > BOUNDARY_ZONE_S) break; // Past boundary zone
+
+    for (const prevU of prevBoundary) {
+      const similarity = tokenOverlapRatio(prevU.text, nextU.text);
+      if (similarity >= DEDUP_THRESHOLD) {
+        duplicateIndices.add(ni);
+        logger.info(
+          `Boundary dedup: dropping utterance at ${nextU.startTime.toFixed(1)}s ` +
+          `(sim=${similarity.toFixed(2)} with prev@${prevU.startTime.toFixed(1)}s) ` +
+          `"${nextU.text.slice(0, 60)}…"`,
+        );
+        break;
+      }
+    }
+  }
+
+  if (duplicateIndices.size > 0) {
+    logger.info(`Boundary dedup: removed ${duplicateIndices.size} duplicate utterance(s)`);
+  }
+
+  return nextUtterances.filter((_, i) => !duplicateIndices.has(i));
 }

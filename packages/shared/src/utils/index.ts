@@ -61,3 +61,4 @@ export {
   startHeartbeatLoop,
   unregisterAgent,
 } from './agentRegistry.js';
+export { tokenOverlapRatio, findWordOverlap } from './textDedup.js';
