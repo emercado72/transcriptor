@@ -21,7 +21,7 @@ import {
   loadLayout,
   getAutoArrangedPositions,
 } from './hooks/useAgentTopology.js';
-import { getAgentStatuses, getAgentStats, getPipelineOverview, getFisherStatus } from './api/client.js';
+import { getAgentStatuses, getAgentStats, getPipelineOverview, getFisherStatus, getHealth } from './api/client.js';
 import type { FisherWorkerInfo } from './api/client.js';
 import type { AgentId, AgentNode, AgentStatus, AgentStats, PipelineOverview } from './types/index.js';
 
@@ -109,6 +109,7 @@ export default function App() {
   const [stats, setStats] = useState<Record<AgentId, AgentStats>>(mockStats);
   const [overview, setOverview] = useState<PipelineOverview>(mockOverview);
   const [fisherWorker, setFisherWorker] = useState<FisherWorkerInfo | null>(null);
+  const [serverMode, setServerMode] = useState<'local' | 'gpu-worker' | null>(null);
 
   // ── Save layout on drag (debounced) ──
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -167,6 +168,15 @@ export default function App() {
         setStats(statsMap as Record<AgentId, AgentStats>);
 
         setOverview(overviewData);
+
+        // Server identity (local vs gpu-worker)
+        try {
+          const health = await getHealth();
+          if (!active) return;
+          setServerMode((health.mode as 'local' | 'gpu-worker') || 'local');
+        } catch {
+          // Health not available
+        }
 
         // Fisher GPU worker status
         try {
@@ -283,6 +293,46 @@ export default function App() {
       color: '#e2e8f0',
       overflow: 'hidden',
     }}>
+      {/* Server identity bar */}
+      {serverMode && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          padding: '4px 16px',
+          background: serverMode === 'local'
+            ? 'linear-gradient(90deg, rgba(34,197,94,0.15), rgba(34,197,94,0.05))'
+            : 'linear-gradient(90deg, rgba(249,115,22,0.2), rgba(249,115,22,0.08))',
+          borderBottom: serverMode === 'local'
+            ? '1px solid rgba(34,197,94,0.3)'
+            : '1px solid rgba(249,115,22,0.4)',
+          fontSize: '11px',
+          fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace",
+          letterSpacing: '0.3px',
+        }}>
+          <span style={{
+            display: 'inline-block',
+            width: '8px',
+            height: '8px',
+            borderRadius: '50%',
+            background: serverMode === 'local' ? '#22c55e' : '#f97316',
+            boxShadow: serverMode === 'local'
+              ? '0 0 6px rgba(34,197,94,0.6)'
+              : '0 0 6px rgba(249,115,22,0.6)',
+          }} />
+          <span style={{
+            fontWeight: 700,
+            color: serverMode === 'local' ? '#4ade80' : '#fb923c',
+          }}>
+            {serverMode === 'local' ? 'LOCAL' : 'GPU WORKER'}
+          </span>
+          <span style={{ color: '#64748b' }}>·</span>
+          <span style={{ color: '#94a3b8' }}>
+            {window.location.host}
+          </span>
+        </div>
+      )}
+
       <Toolbar overview={overview} onAutoArrange={handleAutoArrange} />
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>

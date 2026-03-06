@@ -1,15 +1,18 @@
 /**
  * Fisher - GPU Worker Orchestrator
- * Manages lifecycle: PROVISION -> MONITOR -> BACKUP -> DESTROY
+ *
+ * Push model: provision worker → dispatch job → done.
+ * Agents upload results to S3 themselves.
+ * Fisher no longer polls for job status or runs rsync backups.
+ * Lifecycle: PROVISION → PROCESSING → DESTROY
  */
 import { createLogger } from '@transcriptor/shared';
 import * as linode from './linodeClient.js';
-import * as backup from './jobBackup.js';
 import * as monitor from './workerMonitor.js';
 
 const logger = createLogger('fisher');
 
-export type WorkerState = 'idle' | 'provisioning' | 'booting' | 'processing' | 'backing_up' | 'destroying' | 'error';
+export type WorkerState = 'idle' | 'provisioning' | 'booting' | 'processing' | 'destroying' | 'error';
 
 export interface WorkerInfo {
   instanceId: number | null;
@@ -24,14 +27,11 @@ export interface WorkerInfo {
 export interface FisherStatus {
   worker: WorkerInfo;
   config: Partial<linode.FisherConfig>;
-  backups: backup.BackupResult[];
   heartbeats: monitor.WorkerHeartbeat[];
 }
 
 let workerInfo: WorkerInfo = { instanceId: null, ip: null, label: null, state: 'idle', currentJobId: null, createdAt: null, error: null };
 let fisherConfig: linode.FisherConfig | null = null;
-let backupHistory: backup.BackupResult[] = [];
-let monitorInterval: ReturnType<typeof setInterval> | null = null;
 
 export function initFisher(): linode.FisherConfig {
   fisherConfig = {
@@ -69,7 +69,6 @@ export function getStatus(): FisherStatus {
   return {
     worker: { ...workerInfo },
     config: fisherConfig ? { region: fisherConfig.region, instanceType: fisherConfig.instanceType, labelPrefix: fisherConfig.labelPrefix } : {},
-    backups: [...backupHistory],
     heartbeats: monitor.getAllHeartbeats(),
   };
 }
@@ -111,7 +110,7 @@ export async function provisionWorker(): Promise<string> {
     const ready = await linode.waitForGloria(workerInfo.ip!, 3001, 900_000, 20_000);
     if (!ready) throw new Error('Gloria did not come online within 15 minutes');
     workerInfo.state = 'processing';
-    monitor.startHeartbeat(instance.id, workerInfo.ip!, workerInfo.label!, 30_000);
+    monitor.startHeartbeat(instance.id, workerInfo.ip!, workerInfo.label!, 60_000);
     return workerInfo.ip!;
   } catch (err) {
     workerInfo.state = 'error';
@@ -144,41 +143,6 @@ export async function cleanupOrphans(): Promise<{ destroyed: number; ids: number
   return { destroyed: ids.length, ids };
 }
 
-export function startMonitoring(jobId: string, backupAtStage = 'completed', pollMs = 30_000): void {
-  if (!workerInfo.ip) throw new Error('No worker to monitor');
-  workerInfo.currentJobId = jobId;
-  logger.info('Monitoring job ' + jobId + ' on ' + workerInfo.ip);
-  monitorInterval = setInterval(async () => {
-    try {
-      const status = backup.getRemoteJobStatus(workerInfo.ip!, jobId);
-      if (!status) return;
-      logger.info('Job ' + jobId + ': ' + status.status);
-      if (status.status === backupAtStage || status.status === 'completed' || status.status === 'failed') {
-        stopMonitoring();
-        workerInfo.state = 'backing_up';
-        try { const r = await backup.backupJob(workerInfo.ip!, jobId); backupHistory.push(r); } catch (e) { logger.error('Backup failed: ' + (e as Error).message); }
-        await destroyWorker();
-      }
-    } catch (err) { logger.error('Monitor: ' + (err as Error).message); }
-  }, pollMs);
-}
-
-export function stopMonitoring(): void {
-  if (monitorInterval) { clearInterval(monitorInterval); monitorInterval = null; }
-}
-
-export async function backupAndDestroy(): Promise<backup.BackupResult[]> {
-  if (!workerInfo.ip) throw new Error('No worker');
-  stopMonitoring();
-  workerInfo.state = 'backing_up';
-  const results: backup.BackupResult[] = [];
-  for (const jobId of backup.listRemoteJobs(workerInfo.ip)) {
-    try { const r = await backup.backupJob(workerInfo.ip, jobId); results.push(r); backupHistory.push(r); } catch (e) { logger.error('Backup ' + jobId + ': ' + (e as Error).message); }
-  }
-  await destroyWorker();
-  return results;
-}
-
 export async function destroyWorker(): Promise<void> {
   if (!fisherConfig || !workerInfo.instanceId) { workerInfo.state = 'idle'; return; }
   workerInfo.state = 'destroying';
@@ -187,7 +151,12 @@ export async function destroyWorker(): Promise<void> {
   workerInfo = { instanceId: null, ip: null, label: null, state: 'idle', currentJobId: null, createdAt: null, error: null };
 }
 
-export async function processFolder(driveFolderId: string, subfolderId: string): Promise<backup.BackupResult | null> {
+/**
+ * Process a folder: provision worker → dispatch job.
+ * Returns the jobId. Fisher does NOT wait for completion —
+ * agents push results to S3 themselves.
+ */
+export async function processFolder(driveFolderId: string, subfolderId: string): Promise<{ jobId: string; workerIp: string }> {
   if (!fisherConfig) throw new Error('Fisher not initialized');
   logger.info('=== Fisher: processing folder ' + subfolderId + ' ===');
   const ip = await provisionWorker();
@@ -199,24 +168,9 @@ export async function processFolder(driveFolderId: string, subfolderId: string):
   const enqRes = await fetch('http://' + ip + ':3001/api/agents/yulieth/enqueue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folderId: subfolderId }) });
   if (!enqRes.ok) throw new Error('Enqueue failed: ' + enqRes.status);
   const { jobId } = await enqRes.json() as { jobId: string };
-  logger.info('Job ' + jobId + ' enqueued');
 
-  return new Promise((resolve) => {
-    workerInfo.currentJobId = jobId;
-    const interval = setInterval(async () => {
-      try {
-        const s = backup.getRemoteJobStatus(ip, jobId);
-        if (!s) return;
-        logger.info('Job ' + jobId + ': ' + s.status);
-        if (s.status === 'reviewing' || s.status === 'completed' || s.status === 'failed') {
-          clearInterval(interval);
-          workerInfo.state = 'backing_up';
-          let result: backup.BackupResult | null = null;
-          try { result = await backup.backupJob(ip, jobId); backupHistory.push(result); } catch (e) { logger.error('Backup: ' + (e as Error).message); }
-          await destroyWorker();
-          resolve(result);
-        }
-      } catch (e) { logger.error('Monitor: ' + (e as Error).message); }
-    }, 30_000);
-  });
+  workerInfo.currentJobId = jobId;
+  logger.info('Job ' + jobId + ' dispatched to ' + ip + ' — agents will push results to S3');
+
+  return { jobId, workerIp: ip };
 }

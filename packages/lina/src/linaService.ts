@@ -216,6 +216,15 @@ export async function processJob(jobId: string): Promise<LinaResult> {
 
   logger.info(`Redaction complete: ${redactedSections.length} sections, ${allErrors.length} errors, ${allWarnings.length} warnings`);
 
+  // Upload complete redacted output to S3
+  try {
+    const { uploadJobStage } = await import('@transcriptor/shared');
+    await uploadJobStage(jobId, 'redacted', redactedDir);
+    logger.info(`Uploaded redacted sections to S3 for job ${jobId}`);
+  } catch (e) {
+    logger.warn(`S3 upload failed (non-fatal): ${(e as Error).message}`);
+  }
+
   markLinaRedactionComplete(jobId, {
     totalSections: redactedSections.length,
     validationErrors: allErrors.length,

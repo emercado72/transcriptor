@@ -39,6 +39,11 @@ export function getEnvConfig(): EnvConfig {
     tecnoreunionesDbName: process.env.TECNOREUNIONES_DB_NAME || 'Tecnoreuniones',
     logLevel: process.env.LOG_LEVEL || 'debug',
     gloriaPort: parseInt(process.env.GLORIA_PORT || '3001', 10),
+    s3Endpoint: process.env.S3_ENDPOINT || 'us-east-1.linodeobjects.com',
+    s3Bucket: process.env.S3_BUCKET || 't2025-registry',
+    s3AccessKey: process.env.S3_ACCESS_KEY || '',
+    s3SecretKey: process.env.S3_SECRET_KEY || '',
+    s3Prefix: process.env.S3_PREFIX || 'transcriptor',
   };
 }
 

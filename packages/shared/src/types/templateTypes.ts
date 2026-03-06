@@ -53,4 +53,9 @@ export interface EnvConfig {
   tecnoreunionesDbName: string;
   logLevel: string;
   gloriaPort: number;
+  s3Endpoint: string;
+  s3Bucket: string;
+  s3AccessKey: string;
+  s3SecretKey: string;
+  s3Prefix: string;
 }
