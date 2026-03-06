@@ -859,6 +859,18 @@ export function startServer(port?: number): void {
     // backup-and-destroy removed — S3 push model replaces rsync backup.
     // Use POST /api/agents/fisher/destroy to destroy the worker directly.
 
+    app.post('/api/agents/fisher/adopt', async (req, res) => {
+      try {
+        const { ip, instanceId } = req.body;
+        if (!ip) return res.status(400).json({ error: 'ip is required' });
+        const f = await getFisher();
+        await f.adoptWorker(ip, instanceId);
+        res.json({ ok: true, worker: f.getStatus().worker });
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    });
+
     app.post('/api/agents/fisher/destroy', async (_req, res) => {
       try {
         const f = await getFisher();

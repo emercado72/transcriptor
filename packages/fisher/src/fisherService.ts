@@ -143,6 +143,49 @@ export async function cleanupOrphans(): Promise<{ destroyed: number; ids: number
   return { destroyed: ids.length, ids };
 }
 
+/**
+ * Adopt an existing GPU worker by IP — injects it into Fisher's in-memory state
+ * and starts heartbeat monitoring without provisioning through Linode.
+ */
+export async function adoptWorker(ip: string, instanceId?: number): Promise<void> {
+  if (!fisherConfig) throw new Error('Fisher not initialized');
+  if (workerInfo.state === 'provisioning' || workerInfo.state === 'destroying') {
+    throw new Error('Cannot adopt: worker is ' + workerInfo.state);
+  }
+
+  // If we already track a different worker, stop its heartbeat first
+  if (workerInfo.instanceId && workerInfo.instanceId !== (instanceId ?? null)) {
+    monitor.stopHeartbeat(workerInfo.instanceId);
+  }
+
+  // Resolve instanceId from Linode API if not provided
+  let resolvedId = instanceId ?? null;
+  if (!resolvedId && fisherConfig.apiToken) {
+    try {
+      const workers = await linode.listWorkers(fisherConfig);
+      const match = workers.find(w => w.ipv4.includes(ip));
+      if (match) resolvedId = match.id;
+    } catch { /* ignore — we can still adopt without instance ID */ }
+  }
+
+  workerInfo = {
+    instanceId: resolvedId,
+    ip,
+    label: resolvedId ? `${fisherConfig.labelPrefix}-adopted` : 'manual-adopt',
+    state: 'processing',
+    currentJobId: null,
+    createdAt: new Date().toISOString(),
+    error: null,
+  };
+
+  // Start heartbeat monitoring
+  if (resolvedId) {
+    monitor.startHeartbeat(resolvedId, ip, workerInfo.label!, 60_000);
+  }
+
+  logger.info('Adopted worker at ' + ip + (resolvedId ? ' (instance ' + resolvedId + ')' : ' (no instance ID)'));
+}
+
 export async function destroyWorker(): Promise<void> {
   if (!fisherConfig || !workerInfo.instanceId) { workerInfo.state = 'idle'; return; }
   workerInfo.state = 'destroying';
