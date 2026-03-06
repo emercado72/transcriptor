@@ -136,6 +136,14 @@ if [ ! -f "$AUDIO_TRANSCRIBER_DIR/main.py" ]; then
 else
   echo "  OK audio-transcriber already exists"
 fi
+
+# Patch: ensure Pyannote diarization runs on GPU (older tarballs miss this)
+DIAR_SCRIPT="$AUDIO_TRANSCRIBER_DIR/_run_diarization.py"
+if ! grep -q 'pipeline.to(torch.device' "$DIAR_SCRIPT" 2>/dev/null; then
+  sed -i '/pipeline = Pipeline.from_pretrained/a\    import torch\n    if torch.cuda.is_available():\n        pipeline = pipeline.to(torch.device("cuda"))\n        print(f"[Diarization] Pipeline moved to GPU: {torch.cuda.get_device_name(0)}")\n    else:\n        print("[Diarization] No GPU available, running on CPU")' "$DIAR_SCRIPT"
+  echo "  OK patched _run_diarization.py for GPU support"
+fi
+
 echo "  OK Project cloned"
 
 # -- [6/8] Download pre-built venv -------------------

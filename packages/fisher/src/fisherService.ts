@@ -44,6 +44,23 @@ export function initFisher(): linode.FisherConfig {
     labelPrefix: process.env.FISHER_LABEL_PREFIX || 'transcriptor-gpu',
   };
   if (!fisherConfig.apiToken) logger.warn('LINODE_API_TOKEN not set');
+
+  // When heartbeat declares a worker down, verify with Linode API
+  monitor.onWorkerDown(async (instanceId, label, failures) => {
+    logger.error('Worker ' + label + ' (' + instanceId + ') missed ' + failures + ' heartbeats — checking Linode API...');
+    try {
+      const instance = await linode.getWorker(fisherConfig!, instanceId);
+      // Instance still exists — it might be rebooting or temporarily unreachable
+      logger.warn('Worker ' + label + ' still exists on Linode (status: ' + instance.status + ') — marking as error, keeping alive for investigation');
+      workerInfo.state = 'error';
+      workerInfo.error = 'Worker unreachable after ' + failures + ' heartbeats (Linode status: ' + instance.status + ')';
+    } catch {
+      // Instance gone from Linode (404) — safe to reset
+      logger.error('Worker ' + label + ' no longer exists on Linode — resetting to idle');
+      workerInfo = { instanceId: null, ip: null, label: null, state: 'idle', currentJobId: null, createdAt: null, error: null };
+    }
+  });
+
   logger.info('Fisher initialized: ' + fisherConfig.region + ' / ' + fisherConfig.instanceType);
   return fisherConfig;
 }
@@ -99,6 +116,7 @@ export async function provisionWorker(): Promise<string> {
     workerInfo.state = 'error';
     workerInfo.error = (err as Error).message;
     // Keep the instance alive so we can SSH in and troubleshoot.
+    // It will be cleaned up on the next provisionWorker() call or via cleanupOrphans().
     if (workerInfo.instanceId) {
       logger.warn('Provisioning failed — instance ' + workerInfo.instanceId + ' (' + workerInfo.ip + ') kept alive for debugging');
       logger.warn('SSH: ssh root@' + workerInfo.ip);

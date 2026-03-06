@@ -56,6 +56,13 @@ export function onWorkerDown(cb: (instanceId: number, label: string, failures: n
   onWorkerDownCallback = cb;
 }
 
+/** Callback invoked when a worker is declared down after consecutive failures */
+let onWorkerDownCallback: ((instanceId: number, label: string, failures: number) => void) | null = null;
+
+export function onWorkerDown(cb: (instanceId: number, label: string, failures: number) => void): void {
+  onWorkerDownCallback = cb;
+}
+
 export function getHeartbeat(instanceId: number): WorkerHeartbeat | null {
   return heartbeats.get(instanceId) || null;
 }
@@ -178,7 +185,12 @@ async function collectHeartbeat(instanceId: number, ip: string, label: string): 
     hb.lastError = (err as Error).message;
     hb.consecutiveFailures++;
     if (hb.consecutiveFailures <= 3) {
-      logger.warn('Heartbeat failed for ' + label + ' (' + hb.consecutiveFailures + '): ' + hb.lastError);
+      logger.warn('Heartbeat failed for ' + label + ' (' + hb.consecutiveFailures + '/3): ' + hb.lastError);
+    }
+    if (hb.consecutiveFailures >= 3) {
+      logger.error('Worker ' + label + ' declared DOWN after ' + hb.consecutiveFailures + ' consecutive heartbeat failures');
+      stopHeartbeat(instanceId);
+      if (onWorkerDownCallback) onWorkerDownCallback(instanceId, label, hb.consecutiveFailures);
     }
     // Worker down detection
     if (hb.consecutiveFailures >= 3) {
