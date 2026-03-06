@@ -7,12 +7,40 @@
  * Uses a Redis List (LPUSH/BRPOP) for reliable ordered delivery.
  */
 
+import { Redis } from 'ioredis';
 import { getRedisClient } from './redis.js';
+import { getEnvConfig } from './config.js';
 import { createLogger } from './logger.js';
 
 const logger = createLogger('pipeline:events');
 
 const EVENT_QUEUE_KEY = 'supervisor:event_queue';
+
+/**
+ * Dedicated Redis connection for BRPOP.
+ * BRPOP blocks the connection until an item arrives or the timeout expires,
+ * which would stall all other Redis commands if we used the shared client.
+ */
+let blockingClient: Redis | null = null;
+
+function getBlockingClient(): Redis {
+  if (!blockingClient) {
+    const config = getEnvConfig();
+    blockingClient = new Redis({
+      host: config.redisHost,
+      port: config.redisPort,
+      password: config.redisPassword || undefined,
+      maxRetriesPerRequest: null,
+      retryStrategy: (times: number) => {
+        if (times > 3) return null;
+        return Math.min(times * 200, 2000);
+      },
+    });
+    blockingClient.on('error', (err: Error) => logger.error('Blocking Redis error', err));
+    logger.info('Dedicated blocking Redis client created for BRPOP');
+  }
+  return blockingClient;
+}
 
 // ── Event Types ──
 
@@ -99,7 +127,7 @@ export async function publishFailure(
  * Returns null if no event is available within the timeout.
  */
 export async function popEvent(timeoutSeconds = 5): Promise<PipelineEvent | null> {
-  const redis = getRedisClient();
+  const redis = getBlockingClient();
   const result = await redis.brpop(EVENT_QUEUE_KEY, timeoutSeconds);
   if (!result) return null;
 
