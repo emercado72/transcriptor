@@ -9,7 +9,7 @@ async function fetchJson<T>(url: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function getHealth(): Promise<{ status: string; agent: string; timestamp: string }> {
+export async function getHealth(): Promise<{ status: string; agent: string; mode?: string; timestamp: string }> {
   return fetchJson('/health');
 }
 
@@ -38,7 +38,7 @@ export interface FisherWorkerInfo {
 export interface FisherStatus {
   worker: FisherWorkerInfo;
   config: { region?: string; instanceType?: string; labelPrefix?: string };
-  backups: { jobId: string; durationMs: number; filesBackedUp: string[] }[];
+  backups?: { jobId: string; durationMs: number; filesBackedUp: string[] }[];
   heartbeats: unknown[];
 }
 

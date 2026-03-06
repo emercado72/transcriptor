@@ -16,7 +16,7 @@ interface WorkerHeartbeat {
 interface FisherStatus {
   worker: { instanceId: number | null; ip: string | null; label: string | null; state: string; currentJobId: string | null; createdAt: string | null; error: string | null };
   config: { region?: string; instanceType?: string; labelPrefix?: string };
-  backups: { jobId: string; durationMs: number; filesBackedUp: string[] }[];
+  backups?: { jobId: string; durationMs: number; filesBackedUp: string[] }[];
   heartbeats: WorkerHeartbeat[];
 }
 
@@ -245,7 +245,7 @@ export default function FisherQueuePanel({ node, onClose, onSwitchToChat }: Prop
         )}
 
         {/* Backup History */}
-        {status && status.backups.length > 0 && (
+        {status && status.backups && status.backups.length > 0 && (
           <div>
             <div style={{ fontSize: '11px', color: '#64748b', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.05em' }}>Backup History</div>
             {status.backups.map((b, i) => (

@@ -318,11 +318,16 @@ export default function AgentGraph({
             )}
           </path>
 
-          {/* GPU worker group */}
+          {/* GPU worker group — click opens remote dashboard */}
           <g
             transform={`translate(${gpuPos.x}, ${gpuPos.y})`}
             style={{ cursor: 'pointer' }}
-            onClick={() => onSelectNode('fisher')}
+            onClick={() => {
+              if (fisherWorker?.ip && isReady) {
+                window.open('http://' + fisherWorker.ip + ':3001', '_blank');
+              }
+              onSelectNode('fisher');
+            }}
           >
             {/* Outer glow ring */}
             <circle

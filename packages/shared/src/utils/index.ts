@@ -36,6 +36,12 @@ export {
 } from './googleWorkspace.js';
 export { getRedisClient, closeRedis } from './redis.js';
 export {
+  uploadJobStage,
+  downloadJobFile,
+  listJobFiles,
+  jobStageExists,
+} from './s3.js';
+export {
   publishEvent,
   publishSuccess,
   publishFailure,

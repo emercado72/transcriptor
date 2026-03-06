@@ -536,128 +536,211 @@ export function startServer(port?: number): void {
     }
   });
 
-  // ── Fannery Document Download Endpoint ──
+  // ── Fannery Document Download Endpoint (local disk → S3 fallback) ──
   app.get('/api/agents/fannery/download/:jobId', async (req, res) => {
     try {
       const { jobId } = req.params;
       const fannery = await import('@transcriptor/fannery');
+      const fs2 = await import('fs');
       const progress = fannery.getAllFanneryProgress().find(j => j.jobId === jobId);
 
-      if (!progress) {
-        return res.status(404).json({ error: 'Job not found' });
-      }
-      if (progress.status !== 'completed' || !progress.assembly?.outputPath) {
-        return res.status(400).json({ error: 'Document not available yet' });
-      }
-
-      const filePath = progress.assembly.outputPath;
-      const fs = await import('fs');
-      if (!fs.existsSync(filePath)) {
-        return res.status(404).json({ error: 'Document file not found on disk' });
+      // Try local filesystem first
+      if (progress?.status === 'completed' && progress.assembly?.outputPath) {
+        const filePath = progress.assembly.outputPath;
+        if (fs2.existsSync(filePath)) {
+          const fileName = path.basename(filePath);
+          res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+          res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+          return fs2.createReadStream(filePath).pipe(res);
+        }
       }
 
-      const fileName = path.basename(filePath);
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
-      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-      fs.createReadStream(filePath).pipe(res);
+      // Fallback: try S3
+      try {
+        const { listJobFiles, downloadJobFile } = await import('@transcriptor/shared');
+        const s3Files = await listJobFiles(jobId, 'output');
+        const docxFile = s3Files.find(f => f.endsWith('.docx'));
+        if (docxFile) {
+          const buf = await downloadJobFile(jobId, `output/${docxFile}`);
+          if (buf) {
+            res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(docxFile)}"`);
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+            return res.send(buf);
+          }
+        }
+      } catch (s3Err) {
+        logger.warn('S3 fallback failed for Fannery download: ' + (s3Err as Error).message);
+      }
+
+      if (!progress) return res.status(404).json({ error: 'Job not found' });
+      return res.status(400).json({ error: 'Document not available yet' });
     } catch (err) {
       logger.error('Fannery download error', err as Error);
       res.status(500).json({ error: (err as Error).message });
     }
   });
-  // Lina Section Preview Endpoint
+  // Lina Section Preview Endpoint (local disk → S3 fallback)
   app.get("/api/agents/lina/preview/:jobId", async (req, res) => {
     try {
       const { jobId } = req.params;
       const path2 = await import("path");
       const fs2 = await import("fs");
       const redactedDir = path2.default.join(process.cwd(), "data", "jobs", jobId, "redacted");
-      if (!fs2.default.existsSync(redactedDir)) return res.status(404).json({ error: "No redacted sections found" });
-      const files = fs2.default.readdirSync(redactedDir).filter((f) => f.endsWith(".json") && f !== "manifest.json").sort();
-      if (files.length === 0) return res.status(400).json({ error: "No sections redacted yet" });
-      const sections = [];
-      for (const file of files) {
-        try {
-          const raw = JSON.parse(fs2.default.readFileSync(path2.default.join(redactedDir, file), "utf-8"));
-          const title = raw.sectionTitle || raw.sectionId || file.replace(".json", "");
-          const text = (raw.content || []).map((b) => b.text || "").filter(Boolean).join("\n\n");
-          sections.push("## " + title + "\n\n" + text);
-        } catch {}
+
+      // Helper: parse section JSONs into markdown
+      const renderSections = (jsonContents: Array<{ name: string; data: any }>) => {
+        const sections: string[] = [];
+        for (const { name, data } of jsonContents) {
+          try {
+            const title = data.sectionTitle || data.sectionId || name.replace(".json", "");
+            const text = (data.content || []).map((b: any) => b.text || "").filter(Boolean).join("\n\n");
+            sections.push("## " + title + "\n\n" + text);
+          } catch {}
+        }
+        return sections.join("\n\n---\n\n");
+      };
+
+      // Try local filesystem first
+      if (fs2.default.existsSync(redactedDir)) {
+        const files = fs2.default.readdirSync(redactedDir).filter((f) => f.endsWith(".json") && f !== "manifest.json").sort();
+        if (files.length > 0) {
+          const jsonContents = files.map(f => ({
+            name: f,
+            data: JSON.parse(fs2.default.readFileSync(path2.default.join(redactedDir, f), "utf-8")),
+          }));
+          res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+          return res.send(renderSections(jsonContents));
+        }
       }
-      res.setHeader("Content-Type", "text/markdown; charset=utf-8");
-      res.send(sections.join("\n\n---\n\n"));
+
+      // Fallback: try S3
+      try {
+        const { listJobFiles, downloadJobFile } = await import('@transcriptor/shared');
+        const s3Files = (await listJobFiles(jobId, 'redacted')).filter(f => f.endsWith('.json') && f !== 'manifest.json').sort();
+        if (s3Files.length > 0) {
+          const jsonContents: Array<{ name: string; data: any }> = [];
+          for (const file of s3Files) {
+            const buf = await downloadJobFile(jobId, `redacted/${file}`);
+            if (buf) jsonContents.push({ name: file, data: JSON.parse(buf.toString('utf-8')) });
+          }
+          if (jsonContents.length > 0) {
+            res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+            return res.send(renderSections(jsonContents));
+          }
+        }
+      } catch (s3Err) {
+        logger.warn('S3 fallback failed for Lina preview: ' + (s3Err as Error).message);
+      }
+
+      return res.status(404).json({ error: "No redacted sections found" });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
   });
 
 
-  // ── Fannery Markdown Preview Endpoint ──
+  // ── Fannery Markdown Preview Endpoint (local disk → S3 fallback) ──
   app.get('/api/agents/fannery/preview/:jobId', async (req, res) => {
     try {
       const { jobId } = req.params;
       const fannery = await import('@transcriptor/fannery');
+      const fs2 = await import('fs');
       const progress = fannery.getAllFanneryProgress().find(j => j.jobId === jobId);
 
-      if (!progress) {
-        return res.status(404).json({ error: 'Job not found' });
-      }
-      if (progress.status !== 'completed' || !progress.assembly?.markdownPath) {
-        return res.status(400).json({ error: 'Markdown preview not available yet' });
-      }
-
-      const mdPath = progress.assembly.markdownPath;
-      const fs2 = await import('fs');
-      if (!fs2.existsSync(mdPath)) {
-        return res.status(404).json({ error: 'Markdown file not found on disk' });
+      // Try local filesystem first
+      if (progress?.status === 'completed' && progress.assembly?.markdownPath) {
+        if (fs2.existsSync(progress.assembly.markdownPath)) {
+          const content = fs2.readFileSync(progress.assembly.markdownPath, 'utf-8');
+          res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+          return res.send(content);
+        }
       }
 
-      const content = fs2.readFileSync(mdPath, 'utf-8');
-      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-      res.send(content);
+      // Fallback: try S3
+      try {
+        const { listJobFiles, downloadJobFile } = await import('@transcriptor/shared');
+        const s3Files = await listJobFiles(jobId, 'output');
+        const mdFile = s3Files.find(f => f.endsWith('.md'));
+        if (mdFile) {
+          const buf = await downloadJobFile(jobId, `output/${mdFile}`);
+          if (buf) {
+            res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+            return res.send(buf.toString('utf-8'));
+          }
+        }
+      } catch (s3Err) {
+        logger.warn('S3 fallback failed for Fannery preview: ' + (s3Err as Error).message);
+      }
+
+      if (!progress) return res.status(404).json({ error: 'Job not found' });
+      return res.status(400).json({ error: 'Markdown preview not available yet' });
     } catch (err) {
       logger.error('Fannery preview error', err as Error);
       res.status(500).json({ error: (err as Error).message });
     }
   });
 
-  // ── Fannery PDF Download Endpoint ──
+  // ── Fannery PDF Download Endpoint (local disk → S3 fallback) ──
   app.get('/api/agents/fannery/pdf/:jobId', async (req, res) => {
     try {
       const { jobId } = req.params;
       const fannery = await import('@transcriptor/fannery');
+      const fs2 = await import('fs');
       const progress = fannery.getAllFanneryProgress().find(j => j.jobId === jobId);
 
-      if (!progress) {
-        return res.status(404).json({ error: 'Job not found' });
+      // Try local filesystem first — direct PDF
+      if (progress?.status === 'completed' && progress.assembly?.pdfPath) {
+        if (fs2.existsSync(progress.assembly.pdfPath)) {
+          const fileName = path.basename(progress.assembly.pdfPath);
+          res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+          res.setHeader('Content-Type', 'application/pdf');
+          return fs2.createReadStream(progress.assembly.pdfPath).pipe(res);
+        }
       }
-      if (progress.status !== 'completed' || !progress.assembly?.pdfPath) {
-        // Fallback: try to generate PDF on the fly from markdown
-        if (progress.status === 'completed' && progress.assembly?.markdownPath) {
-          const fs2 = await import('fs');
-          if (fs2.existsSync(progress.assembly.markdownPath)) {
-            const markdown = fs2.readFileSync(progress.assembly.markdownPath, 'utf-8');
-            const pdfBuffer = await fannery.renderMarkdownAsPdf(markdown);
-            const fileName = path.basename(progress.assembly.markdownPath).replace('.md', '.pdf');
-            res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+
+      // Try local filesystem — generate from markdown
+      if (progress?.status === 'completed' && progress.assembly?.markdownPath) {
+        if (fs2.existsSync(progress.assembly.markdownPath)) {
+          const markdown = fs2.readFileSync(progress.assembly.markdownPath, 'utf-8');
+          const pdfBuffer = await fannery.renderMarkdownAsPdf(markdown);
+          const fileName = path.basename(progress.assembly.markdownPath).replace('.md', '.pdf');
+          res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+          res.setHeader('Content-Type', 'application/pdf');
+          return res.send(Buffer.from(pdfBuffer));
+        }
+      }
+
+      // Fallback: try S3 — direct PDF
+      try {
+        const { listJobFiles, downloadJobFile } = await import('@transcriptor/shared');
+        const s3Files = await listJobFiles(jobId, 'output');
+        const pdfFile = s3Files.find(f => f.endsWith('.pdf'));
+        if (pdfFile) {
+          const buf = await downloadJobFile(jobId, `output/${pdfFile}`);
+          if (buf) {
+            res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(pdfFile)}"`);
             res.setHeader('Content-Type', 'application/pdf');
-            res.send(Buffer.from(pdfBuffer));
-            return;
+            return res.send(buf);
           }
         }
-        return res.status(400).json({ error: 'PDF not available yet' });
+        // S3 fallback — generate from markdown on S3
+        const mdFile = s3Files.find(f => f.endsWith('.md'));
+        if (mdFile) {
+          const mdBuf = await downloadJobFile(jobId, `output/${mdFile}`);
+          if (mdBuf) {
+            const pdfBuffer = await fannery.renderMarkdownAsPdf(mdBuf.toString('utf-8'));
+            const fileName = mdFile.replace('.md', '.pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+            res.setHeader('Content-Type', 'application/pdf');
+            return res.send(Buffer.from(pdfBuffer));
+          }
+        }
+      } catch (s3Err) {
+        logger.warn('S3 fallback failed for Fannery PDF: ' + (s3Err as Error).message);
       }
 
-      const pdfPath = progress.assembly.pdfPath;
-      const fs2 = await import('fs');
-      if (!fs2.existsSync(pdfPath)) {
-        return res.status(404).json({ error: 'PDF file not found on disk' });
-      }
-
-      const fileName = path.basename(pdfPath);
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
-      res.setHeader('Content-Type', 'application/pdf');
-      fs2.createReadStream(pdfPath).pipe(res);
+      if (!progress) return res.status(404).json({ error: 'Job not found' });
+      return res.status(400).json({ error: 'PDF not available yet' });
     } catch (err) {
       logger.error('Fannery PDF download error', err as Error);
       res.status(500).json({ error: (err as Error).message });
@@ -773,15 +856,8 @@ export function startServer(port?: number): void {
       }
     });
 
-    app.post('/api/agents/fisher/backup-and-destroy', async (_req, res) => {
-      try {
-        const f = await getFisher();
-        const results = await f.backupAndDestroy();
-        res.json({ ok: true, backups: results });
-      } catch (err) {
-        res.status(500).json({ error: (err as Error).message });
-      }
-    });
+    // backup-and-destroy removed — S3 push model replaces rsync backup.
+    // Use POST /api/agents/fisher/destroy to destroy the worker directly.
 
     app.post('/api/agents/fisher/destroy', async (_req, res) => {
       try {

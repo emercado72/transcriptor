@@ -186,7 +186,18 @@ export async function processJob(jobId: string): Promise<FanneryResult> {
   );
 
   // ──────────────────────────────────────────────
-  // Step 7: Upload to Google Drive (if configured)
+  // Step 7a: Upload assembly output to S3
+  // ──────────────────────────────────────────────
+  try {
+    const { uploadJobStage } = await import('@transcriptor/shared');
+    await uploadJobStage(jobId, 'output', outputDir);
+    logger.info(`Uploaded assembly output to S3 for job ${jobId}`);
+  } catch (e) {
+    logger.warn(`S3 upload failed (non-fatal): ${(e as Error).message}`);
+  }
+
+  // ──────────────────────────────────────────────
+  // Step 7b: Upload to Google Drive (if configured)
   // ──────────────────────────────────────────────
   let driveFileId: string | null = null;
   // TODO: implement Google Drive upload when credentials are configured
