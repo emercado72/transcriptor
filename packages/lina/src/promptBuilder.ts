@@ -150,7 +150,7 @@ export function buildVotingQuestionsBlock(questionList: import('@transcriptor/sh
     .join('\n');
 
   return `## Preguntas de Votacion Registradas por Robinson
-Durante la redaccion, cuando el texto transcrito indique que se realizo una votacion, inserta el marcador exacto en el punto donde se anuncio la apertura o el resultado de esa votacion:
+Durante la redaccion, cuando el texto transcrito indique que se realizo una votacion, inserta el marcador exacto en el punto donde se anunciaron los RESULTADOS de esa votacion (no donde se abre o anuncia la votacion):
 
 > [VOTACION PREGUNTA N]
 
@@ -159,5 +159,5 @@ Donde N es el numero de la pregunta en la lista. Fannery reemplazara ese marcado
 Lista de preguntas en orden cronologico:
 ${lines}
 
-REGLA CRITICA: Inserta el marcador dentro del parrafo donde se realizo la votacion, NO al final del documento.`.trim();
+REGLA CRITICA: Inserta UN SOLO marcador por pregunta, en el parrafo donde se presentaron los resultados de la votacion. NO insertes el marcador donde se anuncia o abre la votacion, solo donde se mencionan los resultados. NUNCA dupliques un marcador.`.trim();
 }
