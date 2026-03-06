@@ -7,6 +7,8 @@ export type EventId = string;
 export enum EventStatus {
   DETECTED = 'detected',
   QUEUED = 'queued',
+  DELEGATING = 'delegating',
+  DELEGATED = 'delegated',
   PREPROCESSING = 'preprocessing',
   TRANSCRIBING = 'transcribing',
   SECTIONING = 'sectioning',

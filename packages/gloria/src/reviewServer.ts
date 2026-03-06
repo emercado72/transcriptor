@@ -253,6 +253,51 @@ export function startServer(port?: number): void {
     }
   });
 
+  // ── Delegation endpoint: receive a delegated job from a remote Supervisor ──
+  app.post('/api/pipeline/delegate', async (req, res) => {
+    try {
+      const { driveFolderId, subfolderId, localJobId, idAsamblea, clientName } = req.body;
+      if (!driveFolderId || !subfolderId) {
+        return res.status(400).json({ error: 'driveFolderId and subfolderId required' });
+      }
+
+      logger.info(`Received delegated job from remote Supervisor (localJobId=${localJobId})`);
+
+      // Step 1: Scan the Drive folder to populate detectedFolders
+      await scanDriveFolder(driveFolderId);
+
+      // Brief delay for Drive scan to populate detectedFolders
+      await new Promise(r => setTimeout(r, 2000));
+
+      // Step 2: Enqueue the specific subfolder
+      const result = await enqueueDetectedFolder(subfolderId);
+      if (!result.success || !result.jobId) {
+        throw new Error('Failed to enqueue delegated folder');
+      }
+
+      // Step 3: If pre-resolved assembly data was provided, update the job
+      if (idAsamblea != null) {
+        try {
+          const supervisor = await import('@transcriptor/supervisor');
+          const job = await supervisor.getPipelineStatus(result.jobId);
+          if (job) {
+            job.idAsamblea = idAsamblea;
+            job.clientName = clientName;
+            await supervisor.saveState(result.jobId, job);
+            logger.info(`Delegated job ${result.jobId}: set idAsamblea=${idAsamblea} (${clientName})`);
+          }
+        } catch (err) {
+          logger.warn(`Could not update assembly data for delegated job: ${(err as Error).message}`);
+        }
+      }
+
+      res.json({ ok: true, remoteJobId: result.jobId, localJobId });
+    } catch (err) {
+      logger.error('Delegation endpoint failed: ' + (err as Error).message);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // ── Pipeline Job Endpoints ──
 
   // Get pipeline status for a specific job
@@ -874,6 +919,26 @@ export function startServer(port?: number): void {
         const f = await getFisher();
         const result = await f.cleanupOrphans();
         res.json({ ok: true, ...result });
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    });
+
+    // ── Fisher worker query endpoints (used by Supervisor delegation) ──
+    app.get('/api/agents/fisher/worker-status', async (_req, res) => {
+      try {
+        const f = await getFisher();
+        res.json(f.getWorkerStatus());
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    });
+
+    app.post('/api/agents/fisher/ensure-worker', async (_req, res) => {
+      try {
+        const f = await getFisher();
+        const ip = await f.ensureWorker();
+        res.json({ ok: true, ip });
       } catch (err) {
         res.status(500).json({ error: (err as Error).message });
       }
@@ -1786,9 +1851,29 @@ Respond ONLY with valid JSON.`,
         }
         logger.info(`Registered ${stopHeartbeats.length}/${manifests.length} agent(s) in Agent Registry`);
 
+        // Restore delegation pollers for jobs delegated before restart (local mode only)
+        if (RUNTIME_MODE === 'local') {
+          try {
+            const { restoreDelegationPollers } = await import('@transcriptor/supervisor');
+            await restoreDelegationPollers();
+          } catch (err) {
+            logger.warn(`Delegation poller restore failed: ${(err as Error).message}`);
+          }
+        }
+
         // Cleanup on shutdown
-        process.on('SIGTERM', () => { stopHeartbeats.forEach(fn => fn()); });
-        process.on('SIGINT', () => { stopHeartbeats.forEach(fn => fn()); });
+        process.on('SIGTERM', () => {
+          stopHeartbeats.forEach(fn => fn());
+          if (RUNTIME_MODE === 'local') {
+            import('@transcriptor/supervisor').then(s => s.stopAllPollers?.()).catch(() => {});
+          }
+        });
+        process.on('SIGINT', () => {
+          stopHeartbeats.forEach(fn => fn());
+          if (RUNTIME_MODE === 'local') {
+            import('@transcriptor/supervisor').then(s => s.stopAllPollers?.()).catch(() => {});
+          }
+        });
 
         logger.info('Startup recovery complete — Supervisor orchestrator running');
       } catch (err) {

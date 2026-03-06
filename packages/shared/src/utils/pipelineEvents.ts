@@ -45,18 +45,21 @@ function getBlockingClient(): Redis {
 // ── Event Types ──
 
 export type PipelineEventType =
-  | 'files_ready'        // Yulieth: files downloaded, ready for preprocessing
-  | 'preprocessing_done' // Chucho: preprocessing complete
+  | 'files_ready'            // Yulieth: files downloaded, ready for preprocessing
+  | 'preprocessing_done'     // Chucho: preprocessing complete
   | 'preprocessing_failed'
-  | 'transcription_done' // Jaime: transcription + sectioning complete
+  | 'transcription_done'     // Jaime: transcription + sectioning complete
   | 'transcription_failed'
-  | 'redaction_done'     // Lina: redaction complete
+  | 'redaction_done'         // Lina: redaction complete
   | 'redaction_failed'
-  | 'assembly_done'      // Fannery: document assembly complete
+  | 'assembly_done'          // Fannery: document assembly complete
   | 'assembly_failed'
-  | 'review_done'        // Gloria: review approved
+  | 'review_done'            // Gloria: review approved
   | 'review_failed'
-  | 'job_retry';         // Manual retry request
+  | 'job_retry'              // Manual retry request
+  | 'delegation_started'     // Supervisor: job delegated to remote GPU worker
+  | 'delegation_completed'   // Supervisor: remote pipeline finished successfully
+  | 'delegation_failed';     // Supervisor: remote pipeline failed or worker lost
 
 export interface PipelineEvent {
   type: PipelineEventType;

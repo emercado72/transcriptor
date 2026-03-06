@@ -143,6 +143,64 @@ export async function cleanupOrphans(): Promise<{ destroyed: number; ids: number
   return { destroyed: ids.length, ids };
 }
 
+// ── Worker query / provision helpers (used by Supervisor delegation) ──
+
+/**
+ * Query current worker status without side effects.
+ */
+export function getWorkerStatus(): WorkerInfo {
+  return { ...workerInfo };
+}
+
+/**
+ * Ensure a GPU worker is available. Provisions one if needed.
+ * If already provisioning/booting, waits until ready.
+ * Returns the worker IP when the worker is healthy.
+ */
+export async function ensureWorker(): Promise<string> {
+  if (!fisherConfig) throw new Error('Fisher not initialized');
+
+  switch (workerInfo.state) {
+    case 'processing':
+      if (!workerInfo.ip) throw new Error('Worker in processing state but no IP');
+      return workerInfo.ip;
+
+    case 'idle':
+    case 'error':
+      return provisionWorker();
+
+    case 'provisioning':
+    case 'booting':
+      return waitForWorkerReady();
+
+    case 'destroying':
+      throw new Error('Worker is being destroyed — try again shortly');
+
+    default:
+      throw new Error('Unknown worker state: ' + workerInfo.state);
+  }
+}
+
+/**
+ * Poll workerInfo until state reaches 'processing' (ready) or 'error'.
+ */
+async function waitForWorkerReady(timeoutMs = 900_000): Promise<string> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (workerInfo.state === 'processing' && workerInfo.ip) {
+      return workerInfo.ip;
+    }
+    if (workerInfo.state === 'error') {
+      throw new Error('Worker provisioning failed: ' + (workerInfo.error || 'unknown'));
+    }
+    if (workerInfo.state === 'idle') {
+      throw new Error('Worker reset to idle unexpectedly');
+    }
+    await new Promise(r => setTimeout(r, 5_000));
+  }
+  throw new Error('Timeout waiting for worker to be ready');
+}
+
 export async function destroyWorker(): Promise<void> {
   if (!fisherConfig || !workerInfo.instanceId) { workerInfo.state = 'idle'; return; }
   workerInfo.state = 'destroying';

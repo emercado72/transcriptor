@@ -50,6 +50,10 @@ const EVENT_TO_NEXT_STAGE: Record<string, EventStatus | null> = {
   'redaction_done': EventStatus.ASSEMBLING,
   'assembly_done': EventStatus.REVIEWING,
   'review_done': EventStatus.COMPLETED,
+  // Delegation events — poller handles terminal states, no next stage needed
+  'delegation_started': null,
+  'delegation_completed': null,
+  'delegation_failed': null,
 };
 
 const EVENT_TO_CURRENT_STAGE: Record<string, EventStatus> = {
@@ -74,6 +78,39 @@ async function handleEvent(event: PipelineEvent): Promise<void> {
   logger.info(`Processing event: ${type} for job ${jobId} from ${agent}`);
 
   try {
+    // ── Delegation intercept: delegate to GPU worker if enabled ──
+    if (type === 'files_ready') {
+      const { shouldDelegate, delegateJob } = await import('./delegationManager.js');
+      if (shouldDelegate()) {
+        const dKey = dispatchKey(jobId, EventStatus.DELEGATING);
+        if (!inFlightDispatches.has(dKey)) {
+          inFlightDispatches.add(dKey);
+          // Get the Drive folder ID from Yulieth config (passed in event data)
+          const driveFolderId = (data?.driveFolderId as string) ||
+            process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || '';
+          logger.info(`Job ${jobId}: delegating to remote GPU worker`);
+          void delegateJob(jobId, driveFolderId)
+            .catch(async (err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.error(`Delegation failed for ${jobId}: ${msg} — falling back to local`);
+              // Fallback: dispatch PREPROCESSING locally
+              await supervisorService.markStageComplete(jobId, EventStatus.QUEUED);
+              await supervisorService.advanceStage(jobId, EventStatus.PREPROCESSING);
+              const dispatcher = dispatchers.get(EventStatus.PREPROCESSING);
+              if (dispatcher) void dispatcher(jobId);
+            })
+            .finally(() => inFlightDispatches.delete(dKey));
+        }
+        return; // Don't proceed to normal dispatch
+      }
+    }
+
+    // ── Delegation events — handled by poller, just log ──
+    if (type === 'delegation_started' || type === 'delegation_completed' || type === 'delegation_failed') {
+      logger.info(`Delegation event: ${type} for job ${jobId}`);
+      return;
+    }
+
     // Handle failure events
     if (type.endsWith('_failed')) {
       const currentStage = EVENT_TO_CURRENT_STAGE[type];
@@ -315,6 +352,8 @@ export interface KanbanBoard {
 
 const KANBAN_STAGES = [
   EventStatus.QUEUED,
+  EventStatus.DELEGATING,
+  EventStatus.DELEGATED,
   EventStatus.PREPROCESSING,
   EventStatus.TRANSCRIBING,
   EventStatus.SECTIONING,
@@ -337,6 +376,8 @@ const ALWAYS_SHOW_STAGES = new Set([
 const STAGE_LABELS: Record<string, string> = {
   [EventStatus.DETECTED]: '🔍 Detected',
   [EventStatus.QUEUED]: '📥 Queued',
+  [EventStatus.DELEGATING]: '🐟 Fisher - Provisioning GPU',
+  [EventStatus.DELEGATED]: '🖥️ GPU Worker - Processing',
   [EventStatus.PREPROCESSING]: '🎛️ Chucho - Preprocessing',
   [EventStatus.TRANSCRIBING]: '🎤 Jaime - Transcribing',
   [EventStatus.SECTIONING]: '📋 Jaime - Sectioning',
@@ -350,6 +391,8 @@ const STAGE_LABELS: Record<string, string> = {
 const STAGE_AGENTS: Record<string, string> = {
   [EventStatus.DETECTED]: 'yulieth',
   [EventStatus.QUEUED]: 'yulieth',
+  [EventStatus.DELEGATING]: 'fisher',
+  [EventStatus.DELEGATED]: 'supervisor',
   [EventStatus.PREPROCESSING]: 'chucho',
   [EventStatus.TRANSCRIBING]: 'jaime',
   [EventStatus.SECTIONING]: 'jaime',

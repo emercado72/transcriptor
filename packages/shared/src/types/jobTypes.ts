@@ -33,6 +33,17 @@ export interface StageStatus {
   error: string | null;
 }
 
+export interface DelegationInfo {
+  workerIp: string;
+  remoteJobId: string;
+  localJobId: string;
+  delegatedAt: string;
+  lastPollAt: string | null;
+  remoteStatus: EventStatus;
+  remoteStages: StageStatus[];
+  pollFailures: number;
+}
+
 export interface PipelineJob {
   jobId: JobId;
   eventId: EventId;
@@ -44,6 +55,8 @@ export interface PipelineJob {
   idAsamblea?: number;
   /** Client name from Tecnoreuniones (e.g. "PORTAL VALPARAISO") */
   clientName?: string;
+  /** Present when job has been delegated to a remote GPU worker */
+  delegationInfo?: DelegationInfo;
 }
 
 export interface QueueStats {

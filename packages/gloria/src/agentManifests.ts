@@ -209,6 +209,8 @@ export function buildManifests(mode: string): AgentManifest[] {
         { name: 'backup-and-destroy', description: 'Backup all jobs from worker and destroy it', endpoint: '/api/agents/fisher/backup-and-destroy', method: 'POST', async: true, inputSchema: {}, outputSchema: { backups: 'BackupResult[]' } },
         { name: 'destroy', description: 'Destroy the current worker instance', endpoint: '/api/agents/fisher/destroy', method: 'POST', async: false, inputSchema: {}, outputSchema: { ok: 'boolean' } },
         { name: 'get-heartbeats', description: 'Get heartbeat data for all workers', endpoint: '/api/agents/fisher/heartbeats', method: 'GET', async: false, inputSchema: {}, outputSchema: { heartbeats: 'WorkerHeartbeat[]' } },
+        { name: 'worker-status', description: 'Query current GPU worker state without side effects', endpoint: '/api/agents/fisher/worker-status', method: 'GET', async: false, inputSchema: {}, outputSchema: { worker: 'WorkerInfo' } },
+        { name: 'ensure-worker', description: 'Ensure a GPU worker is available (provisions one if needed)', endpoint: '/api/agents/fisher/ensure-worker', method: 'POST', async: true, inputSchema: {}, outputSchema: { ip: 'string' } },
       ],
       callback: { type: 'redis-pubsub', channel: 'agent:fisher:events' },
       healthCheck: { endpoint: '/api/agents/fisher/status', intervalMs: 30000 },
