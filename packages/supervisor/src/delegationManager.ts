@@ -12,6 +12,8 @@
 
 import { createLogger, EventStatus, JobStatus, publishSuccess, publishFailure } from '@transcriptor/shared';
 import type { PipelineJob, DelegationInfo, StageStatus } from '@transcriptor/shared';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import * as stateManager from './stateManager.js';
 import * as supervisorService from './supervisorService.js';
 
@@ -43,6 +45,21 @@ interface DelegationPayload {
 export async function delegateJob(jobId: string, driveFolderId: string): Promise<void> {
   const job = await stateManager.loadState(jobId);
   const subfolderId = job.eventId;
+
+  // Resolve driveFolderId: caller → env → yulieth-config.json
+  if (!driveFolderId) {
+    driveFolderId = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || '';
+  }
+  if (!driveFolderId) {
+    try {
+      const cfgPath = resolve(process.cwd(), 'config/yulieth-config.json');
+      const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8'));
+      driveFolderId = cfg.driveFolderId || '';
+    } catch { /* config file not found — will fail below */ }
+  }
+  if (!driveFolderId) {
+    throw new Error('Cannot delegate: no driveFolderId available (set GOOGLE_DRIVE_ROOT_FOLDER_ID)');
+  }
   const now = new Date().toISOString();
 
   // 1. Insert delegation stages after QUEUED

@@ -363,6 +363,114 @@ export function startServer(port?: number): void {
     }
   });
 
+  // Stop a pipeline job (mark as failed, stop processing)
+  app.post('/api/pipeline/:jobId/stop', async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const supervisor = await import('@transcriptor/supervisor');
+      const { getRedisClient } = await import('@transcriptor/shared');
+
+      const job = await supervisor.getPipelineStatus(jobId);
+      if (!job) {
+        return res.status(404).json({ error: 'Pipeline job not found' });
+      }
+
+      if (job.status === 'completed' || job.status === 'failed') {
+        return res.status(400).json({ error: `Job is already ${job.status}` });
+      }
+
+      // Stop delegation poller if delegated
+      if (job.status === 'delegated' || job.status === 'delegating') {
+        try { supervisor.stopAllPollers?.(); } catch {}
+      }
+
+      // Mark current processing stage as failed
+      const now = new Date().toISOString();
+      for (const stage of job.stages) {
+        if (stage.status === 'processing') {
+          stage.status = 'failed' as any;
+          stage.error = 'Manually stopped by user';
+          stage.completedAt = now;
+        }
+      }
+      job.status = 'failed' as any;
+      job.updatedAt = now;
+      await supervisor.saveState(jobId, job);
+
+      // Clean up agent progress keys
+      const redis = getRedisClient();
+      const agents = ['chucho', 'jaime', 'lina', 'fannery', 'gloria'];
+      for (const agent of agents) {
+        await redis.del(`${agent}:progress:${jobId}`).catch(() => {});
+      }
+      await redis.del(`speaker:map:${jobId}`).catch(() => {});
+
+      logger.info(`Job ${jobId} manually stopped by user`);
+      res.json({ success: true, jobId, message: 'Job stopped' });
+    } catch (err) {
+      logger.error('Stop job error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Delete a pipeline job completely (all traces)
+  app.delete('/api/pipeline/:jobId', async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const supervisor = await import('@transcriptor/supervisor');
+      const { getRedisClient } = await import('@transcriptor/shared');
+      const redis = getRedisClient();
+
+      // Stop delegation poller if active
+      try { supervisor.stopAllPollers?.(); } catch {}
+
+      // Delete pipeline state + remove from active jobs
+      await redis.del(`transcriptor:pipeline:${jobId}`).catch(() => {});
+      await redis.srem('transcriptor:active_jobs', jobId).catch(() => {});
+
+      // Delete all agent progress keys
+      const agents = ['chucho', 'jaime', 'lina', 'fannery', 'gloria'];
+      for (const agent of agents) {
+        await redis.del(`${agent}:progress:${jobId}`).catch(() => {});
+        await redis.del(`${agent}:active_jobs:${jobId}`).catch(() => {});
+      }
+      await redis.del(`speaker:map:${jobId}`).catch(() => {});
+      await redis.del(`gloria:review:${jobId}`).catch(() => {});
+
+      // Remove from detected folders (reset to allow re-enqueue)
+      const rawFolders = await redis.get('gloria:detected_folders');
+      if (rawFolders) {
+        try {
+          const folders = JSON.parse(rawFolders) as Record<string, any>;
+          for (const [key, folder] of Object.entries(folders)) {
+            if (folder.jobId === jobId) {
+              delete folders[key];
+            }
+          }
+          await redis.set('gloria:detected_folders', JSON.stringify(folders));
+        } catch {}
+      }
+
+      // Also remove from in-memory detected folders map
+      for (const [key, folder] of detectedFolders.entries()) {
+        if (folder.jobId === jobId) {
+          detectedFolders.delete(key);
+        }
+      }
+
+      // Delete data directory on disk
+      const { rm } = await import('fs/promises');
+      const jobDir = `${process.cwd()}/data/jobs/${jobId}`;
+      await rm(jobDir, { recursive: true, force: true }).catch(() => {});
+
+      logger.info(`Job ${jobId} completely deleted by user`);
+      res.json({ success: true, jobId, message: 'Job deleted' });
+    } catch (err) {
+      logger.error('Delete job error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // ── Supervisor Kanban Endpoint ──
   app.get('/api/supervisor/kanban', async (_req, res) => {
     try {
@@ -4146,7 +4254,10 @@ async function enqueueDetectedFolder(folderId: string): Promise<{ success: boole
       logger.info(`Yulieth: downloads complete for job ${jobId} — notifying Supervisor`);
 
       // 3. Notify Supervisor: files are ready for preprocessing
-      await publishSuccess('files_ready', jobId, 'yulieth', { folderId });
+      await publishSuccess('files_ready', jobId, 'yulieth', {
+        folderId,
+        driveFolderId: yuliethConfig.driveFolderId,
+      });
     } catch (dlErr) {
       const msg = dlErr instanceof Error ? dlErr.message : String(dlErr);
       const { publishFailure } = await import('@transcriptor/shared');

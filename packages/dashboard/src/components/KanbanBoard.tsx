@@ -67,8 +67,22 @@ function formatDate(iso: string): string {
   });
 }
 
+/** Generate a random 4-word confirmation phrase */
+function generateConfirmPhrase(): string {
+  const words = [
+    'alpha', 'bravo', 'cedar', 'delta', 'eagle', 'frost', 'gamma', 'hyper',
+    'ivory', 'jolly', 'kappa', 'lunar', 'mango', 'nexus', 'omega', 'prism',
+    'quartz', 'radar', 'sigma', 'tango', 'ultra', 'vivid', 'wired', 'xenon',
+    'yield', 'zephyr', 'blaze', 'coral', 'drift', 'flint', 'grove', 'haven',
+  ];
+  const pick = () => words[Math.floor(Math.random() * words.length)];
+  return `${pick()} ${pick()} ${pick()} ${pick()}`;
+}
+
 const COLUMN_COLORS: Record<string, string> = {
   queued: '#3b82f6',
+  delegating: '#14b8a6',
+  delegated: '#0ea5e9',
   preprocessing: '#f59e0b',
   transcribing: '#8b5cf6',
   sectioning: '#8b5cf6',
@@ -87,10 +101,124 @@ const STATUS_ICONS: Record<string, string> = {
   retrying: '🔄',
 };
 
+// ── Confirmation Modal ──
+
+interface ConfirmModalProps {
+  action: 'stop' | 'delete';
+  jobId: string;
+  clientName?: string;
+  phrase: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+function ConfirmModal({ action, jobId, clientName, phrase, onConfirm, onCancel }: ConfirmModalProps) {
+  const [input, setInput] = useState('');
+  const isMatch = input.trim().toLowerCase() === phrase.toLowerCase();
+
+  const colors = action === 'delete'
+    ? { accent: '#ef4444', bg: '#450a0a', border: '#dc2626' }
+    : { accent: '#f59e0b', bg: '#451a03', border: '#d97706' };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 9999,
+      background: 'rgba(0,0,0,0.7)', display: 'flex',
+      alignItems: 'center', justifyContent: 'center',
+    }} onClick={onCancel}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: '#1e293b', border: `1px solid ${colors.border}`,
+        borderRadius: '12px', padding: '24px', width: '420px',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+      }}>
+        <div style={{ fontSize: '16px', fontWeight: 700, color: colors.accent, marginBottom: '8px' }}>
+          {action === 'delete' ? '🗑️ Delete Job Permanently' : '⛔ Stop Job Processing'}
+        </div>
+
+        <div style={{ fontSize: '13px', color: '#cbd5e1', marginBottom: '16px', lineHeight: 1.5 }}>
+          {action === 'delete'
+            ? 'This will permanently remove all data, files, and history for this job. This cannot be undone.'
+            : 'This will stop all processing and mark the job as failed.'}
+        </div>
+
+        <div style={{
+          background: colors.bg, borderRadius: '6px', padding: '10px 12px',
+          marginBottom: '16px', fontSize: '12px',
+        }}>
+          <div style={{ color: '#94a3b8', marginBottom: '4px' }}>
+            Job: <span style={{ color: '#f1f5f9', fontFamily: 'monospace' }}>{jobId.slice(0, 8)}</span>
+            {clientName && <span style={{ color: '#f1f5f9' }}> — {clientName}</span>}
+          </div>
+        </div>
+
+        <div style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '8px' }}>
+          Type the following to confirm:
+        </div>
+        <div style={{
+          fontFamily: 'monospace', fontSize: '15px', fontWeight: 700,
+          color: colors.accent, background: '#0f172a',
+          padding: '8px 12px', borderRadius: '6px', marginBottom: '12px',
+          letterSpacing: '0.05em', textAlign: 'center',
+          border: '1px solid #334155', userSelect: 'all',
+        }}>
+          {phrase}
+        </div>
+
+        <input
+          type="text"
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          placeholder="Type the 4 words above..."
+          autoFocus
+          style={{
+            width: '100%', padding: '10px 12px', fontSize: '14px',
+            background: '#0f172a', border: `1px solid ${isMatch ? colors.accent : '#334155'}`,
+            borderRadius: '6px', color: '#f1f5f9', outline: 'none',
+            fontFamily: 'monospace', boxSizing: 'border-box',
+            transition: 'border-color 0.2s',
+          }}
+          onKeyDown={e => { if (e.key === 'Enter' && isMatch) onConfirm(); if (e.key === 'Escape') onCancel(); }}
+        />
+
+        <div style={{ display: 'flex', gap: '8px', marginTop: '16px', justifyContent: 'flex-end' }}>
+          <button onClick={onCancel} style={{
+            background: '#334155', border: 'none', borderRadius: '6px',
+            padding: '8px 16px', color: '#94a3b8', cursor: 'pointer', fontSize: '13px',
+          }}>
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={!isMatch}
+            style={{
+              background: isMatch ? colors.accent : '#334155',
+              border: 'none', borderRadius: '6px',
+              padding: '8px 16px', color: isMatch ? '#fff' : '#64748b',
+              cursor: isMatch ? 'pointer' : 'not-allowed', fontSize: '13px',
+              fontWeight: 600, transition: 'all 0.2s',
+              opacity: isMatch ? 1 : 0.5,
+            }}
+          >
+            {action === 'delete' ? 'Delete Forever' : 'Stop Job'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main Component ──
+
 export default function KanbanBoard({ node, onClose, onSwitchToChat }: Props) {
   const [board, setBoard] = useState<KanbanBoardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedCard, setSelectedCard] = useState<KanbanCard | null>(null);
+  const [confirmAction, setConfirmAction] = useState<{
+    action: 'stop' | 'delete';
+    jobId: string;
+    clientName?: string;
+    phrase: string;
+  } | null>(null);
 
   const fetchBoard = useCallback(async () => {
     try {
@@ -118,10 +246,47 @@ export default function KanbanBoard({ node, onClose, onSwitchToChat }: Props) {
         body: JSON.stringify({ stage }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      // Refresh after retry
       setTimeout(fetchBoard, 500);
     } catch (err) {
       console.error('Retry failed:', err);
+    }
+  };
+
+  const handleStop = (card: KanbanCard) => {
+    setConfirmAction({
+      action: 'stop',
+      jobId: card.jobId,
+      clientName: card.clientName,
+      phrase: generateConfirmPhrase(),
+    });
+  };
+
+  const handleDelete = (card: KanbanCard) => {
+    setConfirmAction({
+      action: 'delete',
+      jobId: card.jobId,
+      clientName: card.clientName,
+      phrase: generateConfirmPhrase(),
+    });
+  };
+
+  const executeAction = async () => {
+    if (!confirmAction) return;
+    const { action, jobId } = confirmAction;
+    try {
+      if (action === 'stop') {
+        const res = await fetch(`/api/pipeline/${jobId}/stop`, { method: 'POST' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      } else {
+        const res = await fetch(`/api/pipeline/${jobId}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      }
+      setConfirmAction(null);
+      setSelectedCard(null);
+      setTimeout(fetchBoard, 500);
+    } catch (err) {
+      console.error(`${action} failed:`, err);
+      setConfirmAction(null);
     }
   };
 
@@ -135,6 +300,18 @@ export default function KanbanBoard({ node, onClose, onSwitchToChat }: Props) {
       flexDirection: 'column',
       height: '100%',
     }}>
+      {/* Confirmation Modal */}
+      {confirmAction && (
+        <ConfirmModal
+          action={confirmAction.action}
+          jobId={confirmAction.jobId}
+          clientName={confirmAction.clientName}
+          phrase={confirmAction.phrase}
+          onConfirm={executeAction}
+          onCancel={() => setConfirmAction(null)}
+        />
+      )}
+
       {/* Header */}
       <div style={{
         padding: '16px',
@@ -378,28 +555,72 @@ export default function KanbanBoard({ node, onClose, onSwitchToChat }: Props) {
                         </div>
                       ))}
 
-                      {/* Retry button for failed jobs */}
-                      {card.currentStageStatus === 'failed' && (
+                      {/* Action buttons */}
+                      <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
+                        {/* Retry button for failed jobs */}
+                        {card.currentStageStatus === 'failed' && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRetry(card.jobId, card.currentStage);
+                            }}
+                            style={{
+                              flex: 1,
+                              background: '#1e293b',
+                              border: '1px solid #f59e0b',
+                              borderRadius: '4px',
+                              padding: '4px 8px',
+                              color: '#f59e0b',
+                              cursor: 'pointer',
+                              fontSize: '11px',
+                            }}
+                          >
+                            🔄 Retry
+                          </button>
+                        )}
+
+                        {/* Stop button — only for active (non-terminal) jobs */}
+                        {card.status !== 'completed' && card.status !== 'failed' && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleStop(card);
+                            }}
+                            style={{
+                              flex: 1,
+                              background: '#1e293b',
+                              border: '1px solid #f59e0b',
+                              borderRadius: '4px',
+                              padding: '4px 8px',
+                              color: '#f59e0b',
+                              cursor: 'pointer',
+                              fontSize: '11px',
+                            }}
+                          >
+                            ⛔ Stop
+                          </button>
+                        )}
+
+                        {/* Delete button — always available */}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleRetry(card.jobId, card.currentStage);
+                            handleDelete(card);
                           }}
                           style={{
-                            marginTop: '8px',
-                            width: '100%',
+                            flex: 1,
                             background: '#1e293b',
-                            border: '1px solid #f59e0b',
+                            border: '1px solid #ef4444',
                             borderRadius: '4px',
                             padding: '4px 8px',
-                            color: '#f59e0b',
+                            color: '#ef4444',
                             cursor: 'pointer',
                             fontSize: '11px',
                           }}
                         >
-                          🔄 Retry {card.currentStage}
+                          🗑️ Delete
                         </button>
-                      )}
+                      </div>
                     </div>
                   )}
                 </div>
