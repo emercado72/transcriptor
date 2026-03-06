@@ -45,10 +45,20 @@ export function initFisher(): linode.FisherConfig {
   };
   if (!fisherConfig.apiToken) logger.warn('LINODE_API_TOKEN not set');
 
-  // When heartbeat declares a worker down, reset Fisher state
-  monitor.onWorkerDown((instanceId, label, failures) => {
-    logger.error('Worker ' + label + ' (' + instanceId + ') is down after ' + failures + ' missed heartbeats — resetting to idle');
-    workerInfo = { instanceId: null, ip: null, label: null, state: 'idle', currentJobId: null, createdAt: null, error: null };
+  // When heartbeat declares a worker down, verify with Linode API
+  monitor.onWorkerDown(async (instanceId, label, failures) => {
+    logger.error('Worker ' + label + ' (' + instanceId + ') missed ' + failures + ' heartbeats — checking Linode API...');
+    try {
+      const instance = await linode.getWorker(fisherConfig!, instanceId);
+      // Instance still exists — it might be rebooting or temporarily unreachable
+      logger.warn('Worker ' + label + ' still exists on Linode (status: ' + instance.status + ') — marking as error, keeping alive for investigation');
+      workerInfo.state = 'error';
+      workerInfo.error = 'Worker unreachable after ' + failures + ' heartbeats (Linode status: ' + instance.status + ')';
+    } catch {
+      // Instance gone from Linode (404) — safe to reset
+      logger.error('Worker ' + label + ' no longer exists on Linode — resetting to idle');
+      workerInfo = { instanceId: null, ip: null, label: null, state: 'idle', currentJobId: null, createdAt: null, error: null };
+    }
   });
 
   logger.info('Fisher initialized: ' + fisherConfig.region + ' / ' + fisherConfig.instanceType);
