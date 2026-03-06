@@ -10,8 +10,11 @@
  *   - Uptime
  */
 
-import { execSync } from 'node:child_process';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createLogger } from '@transcriptor/shared';
+
+const execAsync = promisify(exec);
 
 const logger = createLogger('fisher:monitor');
 
@@ -130,8 +133,8 @@ async function collectHeartbeat(instanceId: number, ip: string, label: string): 
       hb.gloriaHealthy = false;
     }
 
-    // SSH metrics (one command, parse all)
-    const metrics = execSync(
+    // SSH metrics (one command, parse all) — async to avoid blocking event loop
+    const { stdout: metrics } = await execAsync(
       'ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no root@' + ip + ' "' +
         'echo GPU_START && nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits 2>/dev/null && echo GPU_END; ' +
         'echo SYS_START && free -m | grep Mem && echo DISK && df -BG / | tail -1 && echo UPTIME && cat /proc/uptime && echo SYS_END; ' +
@@ -187,10 +190,11 @@ async function collectHeartbeat(instanceId: number, ip: string, label: string): 
       const jobIds = jobsMatch[1].trim().split('\n').filter(Boolean);
       for (const jobId of jobIds) {
         try {
-          const status = execSync(
-            'ssh -o ConnectTimeout=5 root@' + ip + ' "redis-cli GET transcriptor:pipeline:' + jobId + '"',
+          const { stdout: statusRaw } = await execAsync(
+            'ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no root@' + ip + ' "redis-cli GET transcriptor:pipeline:' + jobId + '"',
             { encoding: 'utf-8', timeout: 10_000 },
-          ).trim();
+          );
+          const status = statusRaw.trim();
           if (status) {
             const data = JSON.parse(status);
             hb.pipelineJobs.push({
@@ -211,8 +215,8 @@ async function collectHeartbeat(instanceId: number, ip: string, label: string): 
     if (hb.consecutiveFailures <= 3) {
       logger.warn('Heartbeat failed for ' + label + ' (' + hb.consecutiveFailures + '/3): ' + hb.lastError);
     }
-    if (hb.consecutiveFailures === 3) {
-      logger.error('Worker ' + label + ' declared DOWN after 3 consecutive heartbeat failures');
+    if (hb.consecutiveFailures >= 3) {
+      logger.error('Worker ' + label + ' declared DOWN after ' + hb.consecutiveFailures + ' consecutive heartbeat failures');
       stopHeartbeat(instanceId);
       if (onWorkerDownCallback) onWorkerDownCallback(instanceId, label, hb.consecutiveFailures);
     }
