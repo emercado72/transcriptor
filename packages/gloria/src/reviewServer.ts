@@ -3942,21 +3942,48 @@ async function scanDriveFolder(folderId: string): Promise<DetectedFolder[]> {
       continue;
     }
 
-    // List subfolder contents
+    // List subfolder contents (event folder level, e.g. "26011 Sago")
     const contents = await gwDriveListFiles(subfolder.id, 100);
-    const audioFiles = contents
+    let audioFiles = contents
       .filter(f => {
         const ext = f.name.toLowerCase().match(/\.[^.]+$/)?.[0] || '';
         return audioExts.has(ext);
       })
       .map(f => ({ id: f.id, name: f.name, size: f.size }));
 
-    const votingFiles = contents
+    let votingFiles = contents
       .filter(f => {
         const ext = f.name.toLowerCase().match(/\.[^.]+$/)?.[0] || '';
         return votingExts.has(ext);
       })
       .map(f => ({ id: f.id, name: f.name, size: f.size }));
+
+    // If no audio files at event folder level, look inside child folders
+    // (e.g. "Grabacion/" subfolder where audio/video files are stored)
+    if (audioFiles.length === 0) {
+      const childFolders = contents.filter(f => f.mimeType === 'application/vnd.google-apps.folder');
+      for (const child of childFolders) {
+        const childContents = await gwDriveListFiles(child.id, 100);
+        const childAudio = childContents
+          .filter(f => {
+            const ext = f.name.toLowerCase().match(/\.[^.]+$/)?.[0] || '';
+            return audioExts.has(ext);
+          })
+          .map(f => ({ id: f.id, name: f.name, size: f.size }));
+        const childVoting = childContents
+          .filter(f => {
+            const ext = f.name.toLowerCase().match(/\.[^.]+$/)?.[0] || '';
+            return votingExts.has(ext);
+          })
+          .map(f => ({ id: f.id, name: f.name, size: f.size }));
+
+        if (childAudio.length > 0) {
+          audioFiles = [...audioFiles, ...childAudio];
+          votingFiles = [...votingFiles, ...childVoting];
+          logger.info(`Found ${childAudio.length} audio file(s) in ${subfolder.name}/${child.name}`);
+        }
+      }
+    }
 
     const folder: DetectedFolder = {
       folderId: subfolder.id,
