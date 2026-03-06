@@ -15,7 +15,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { createLogger } from '@transcriptor/shared';
+import { createLogger, findWordOverlap } from '@transcriptor/shared';
 import { reconcileSpeakersRedis } from './speakerReconcilerRedis.js';
 import { reconcileSpeakersLLM } from './speakerReconcilerLLM.js';
 
@@ -196,12 +196,29 @@ export function groupConsecutiveSpeakers(segments: TranscriptSegment[]): Transcr
 
   const grouped: TranscriptSegment[] = [];
   let current = { ...segments[0] };
+  let trimmedCount = 0;
 
   for (let i = 1; i < segments.length; i++) {
     const seg = segments[i];
     if (seg.speaker === current.speaker) {
       current.end = seg.end;
-      current.text += ' ' + seg.text;
+
+      // Detect text overlap: the suffix of current.text matching a prefix of seg.text
+      const overlapWords = findWordOverlap(current.text, seg.text);
+      if (overlapWords > 0) {
+        // Trim the overlapping prefix from seg.text before appending
+        const words = seg.text.split(/\s+/);
+        const trimmed = words.slice(overlapWords).join(' ');
+        trimmedCount++;
+        logger.debug(
+          `Text overlap: ${overlapWords} words trimmed at ${seg.start.toFixed(1)}s`,
+        );
+        if (trimmed.length > 0) {
+          current.text += ' ' + trimmed;
+        }
+      } else {
+        current.text += ' ' + seg.text;
+      }
     } else {
       grouped.push(current);
       current = { ...seg };
@@ -209,6 +226,9 @@ export function groupConsecutiveSpeakers(segments: TranscriptSegment[]): Transcr
   }
   grouped.push(current);
 
+  if (trimmedCount > 0) {
+    logger.info(`Text overlap dedup: trimmed ${trimmedCount} overlapping segment(s)`);
+  }
   logger.info(`Grouped ${segments.length} segments → ${grouped.length} speaker blocks`);
   return grouped;
 }

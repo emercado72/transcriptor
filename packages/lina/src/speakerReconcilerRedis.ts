@@ -19,7 +19,7 @@
  *   5. Store the final mapping in Redis: `speaker:map:{jobId}`
  */
 
-import { createLogger, getRedisClient } from '@transcriptor/shared';
+import { createLogger, getRedisClient, tokenOverlapRatio } from '@transcriptor/shared';
 import type {
   ChunkTranscript,
   SpeakerMap,
@@ -746,6 +746,11 @@ export async function loadCachedSpeakerMap(jobId: string): Promise<Reconciliatio
 
 // ── Helpers ──
 
+/** Seconds from each chunk boundary to check for duplicates. */
+const BOUNDARY_ZONE_S = 60;
+/** Minimum token overlap ratio to flag a segment as duplicate. */
+const DEDUP_THRESHOLD = 0.7;
+
 function applyMappingAndMerge(
   chunks: ChunkTranscript[],
   chunkMaps: SpeakerMap[],
@@ -757,7 +762,43 @@ function applyMappingAndMerge(
     const chunk = chunks[i];
     const map = chunkMaps[i];
 
-    for (const seg of chunk.segments) {
+    let segments = chunk.segments;
+
+    // Dedup segments near the boundary with the previous chunk
+    if (i > 0) {
+      const prevChunk = chunks[i - 1];
+      const prevDuration = prevChunk.durationSeconds;
+      const boundaryStart = prevDuration - BOUNDARY_ZONE_S;
+      const prevBoundary = prevChunk.segments.filter(s => s.start >= boundaryStart);
+
+      if (prevBoundary.length > 0) {
+        const duplicateIndices = new Set<number>();
+
+        for (let si = 0; si < segments.length; si++) {
+          const seg = segments[si];
+          if (seg.start > BOUNDARY_ZONE_S) break;
+
+          for (const prevSeg of prevBoundary) {
+            const similarity = tokenOverlapRatio(prevSeg.text, seg.text);
+            if (similarity >= DEDUP_THRESHOLD) {
+              duplicateIndices.add(si);
+              logger.info(
+                `Lina boundary dedup chunk ${i}: dropping seg@${seg.start.toFixed(1)}s ` +
+                `(sim=${similarity.toFixed(2)}) "${seg.text.slice(0, 60)}…"`,
+              );
+              break;
+            }
+          }
+        }
+
+        if (duplicateIndices.size > 0) {
+          logger.info(`Lina boundary dedup chunk ${i}: removed ${duplicateIndices.size} segment(s)`);
+          segments = segments.filter((_, idx) => !duplicateIndices.has(idx));
+        }
+      }
+    }
+
+    for (const seg of segments) {
       merged.push({
         start: seg.start + timeOffset,
         end: seg.end + timeOffset,
