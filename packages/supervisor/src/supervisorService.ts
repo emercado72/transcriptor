@@ -15,7 +15,7 @@ import * as stateManager from './stateManager.js';
 
 const logger = createLogger('supervisor');
 
-const PIPELINE_STAGES: { stage: EventStatus; agent: string }[] = [
+export const PIPELINE_STAGES: { stage: EventStatus; agent: string }[] = [
   { stage: EventStatus.DETECTED, agent: 'yulieth' },
   { stage: EventStatus.QUEUED, agent: 'yulieth' },
   { stage: EventStatus.PREPROCESSING, agent: 'chucho' },

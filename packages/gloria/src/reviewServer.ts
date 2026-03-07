@@ -545,71 +545,16 @@ export function startServer(port?: number): void {
     }
   });
 
-  // Download S3 data + trigger local reprocessing from a given stage
+  // Reprocess a job from a given stage — Supervisor handles all intelligence
   app.post('/api/jobs/:jobId/reprocess', async (req, res) => {
     try {
       const { jobId } = req.params;
       const { fromStage } = req.body as { fromStage?: string };
+      if (!fromStage) return res.status(400).json({ error: 'fromStage is required' });
 
-      const validStages = ['preprocessing', 'transcribing', 'sectioning', 'redacting', 'assembling', 'reviewing'];
-      if (!fromStage || !validStages.includes(fromStage)) {
-        return res.status(400).json({ error: `fromStage must be one of: ${validStages.join(', ')}` });
-      }
-
-      const nodePath = await import('node:path');
-      const { downloadJobStage, publishEvent } = await import('@transcriptor/shared');
       const supervisor = await import('@transcriptor/supervisor');
-
-      const projectRoot = nodePath.default.resolve(import.meta.dirname, '../../..');
-      const jobDir = nodePath.default.join(projectRoot, 'data', 'jobs', jobId);
-
-      // Download prerequisite stages from S3 (only for stages that have S3 data)
-      const downloaded: Record<string, string[]> = {};
-      const s3Prerequisites: Record<string, string[]> = {
-        redacting: ['transcript', 'sections'],
-        assembling: ['redacted'],
-        reviewing: ['output'],
-      };
-
-      const prereqs = s3Prerequisites[fromStage];
-      if (prereqs) {
-        for (const stage of prereqs) {
-          downloaded[stage] = await downloadJobStage(jobId, stage, nodePath.default.join(jobDir, stage));
-        }
-      }
-
-      // Ensure job exists in Redis — create minimal state if cleaned up
-      let job;
-      try {
-        job = await supervisor.loadState(jobId);
-      } catch {
-        // Job was cleaned from Redis — recreate minimal state
-        const { EventStatus } = await import('@transcriptor/shared');
-        job = {
-          jobId,
-          eventId: 'reprocessed',
-          status: EventStatus.QUEUED,
-          stages: [],
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          idAsamblea: '',
-          clientName: 'Reprocessed',
-        };
-        await supervisor.saveState(jobId, job as any);
-      }
-
-      // Publish a retry event for the target stage
-      await publishEvent({
-        type: 'job_retry' as any,
-        jobId,
-        agent: 'gloria',
-        timestamp: new Date().toISOString(),
-        data: { stage: fromStage },
-      });
-
-      const totalFiles = Object.values(downloaded).reduce((sum, arr) => sum + arr.length, 0);
-      logger.info(`Job ${jobId} reprocess from ${fromStage}: downloaded ${totalFiles} S3 files, retry event published`);
-      res.json({ ok: true, jobId, fromStage, filesDownloaded: downloaded });
+      const result = await supervisor.reprocessJob(jobId, fromStage);
+      res.json(result);
     } catch (err) {
       logger.error('Reprocess error', err as Error);
       res.status(500).json({ error: (err as Error).message });
