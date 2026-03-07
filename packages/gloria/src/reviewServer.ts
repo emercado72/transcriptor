@@ -5,7 +5,7 @@ import express from 'express';
 import cors from 'cors';
 import { sql } from 'drizzle-orm';
 import OpenAI from 'openai';
-import { createLogger, getEnvConfig, getDb, gwDriveListFiles, getRedisClient, EventStatus } from '@transcriptor/shared';
+import { createLogger, getEnvConfig, getDb, gwDriveListFiles, gwDriveGetFile, getRedisClient, EventStatus } from '@transcriptor/shared';
 import type { JobId, SectionId, EventFolder, ReviewItemStatus } from '@transcriptor/shared';
 import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions.js';
 import {
@@ -295,8 +295,16 @@ export function startServer(port?: number): void {
         }
       }
 
-      // Get folder name from Drive metadata
-      const folderName = clientName || subfolderId;
+      // Get the real folder name from Drive (not the clientName sent by supervisor)
+      let folderName: string;
+      try {
+        const folderMeta = await gwDriveGetFile(subfolderId);
+        folderName = folderMeta.name;
+        logger.info(`Delegation: Drive folder name is "${folderName}"`);
+      } catch {
+        folderName = clientName || subfolderId;
+        logger.warn(`Could not fetch Drive folder name, falling back to: "${folderName}"`);
+      }
 
       // Register in detectedFolders map so enqueueDetectedFolder can find it
       const folder: DetectedFolder = {
@@ -311,25 +319,10 @@ export function startServer(port?: number): void {
       logger.info(`Delegation: registered subfolder ${subfolderId} (${folderName}) with ${audioFiles.length} audio files`);
 
       // Step 2: Enqueue the subfolder (now guaranteed to be in detectedFolders)
+      // enqueueDetectedFolder extracts idAsamblea from the folder name prefix
       const result = await enqueueDetectedFolder(subfolderId);
       if (!result.success || !result.jobId) {
         throw new Error('Failed to enqueue delegated folder');
-      }
-
-      // Step 3: If pre-resolved assembly data was provided, update the job
-      if (idAsamblea != null) {
-        try {
-          const supervisor = await import('@transcriptor/supervisor');
-          const job = await supervisor.getPipelineStatus(result.jobId);
-          if (job) {
-            job.idAsamblea = idAsamblea;
-            job.clientName = clientName;
-            await supervisor.saveState(result.jobId, job);
-            logger.info(`Delegated job ${result.jobId}: set idAsamblea=${idAsamblea} (${clientName})`);
-          }
-        } catch (err) {
-          logger.warn(`Could not update assembly data for delegated job: ${(err as Error).message}`);
-        }
       }
 
       res.json({ ok: true, remoteJobId: result.jobId, localJobId });
@@ -4374,35 +4367,19 @@ async function enqueueDetectedFolder(folderId: string): Promise<{ success: boole
     throw new Error(`Folder ${folderId} is already ${folder.status}`);
   }
 
-  // 1. Resolve Tecnoreuniones assembly from audio file names or folder name
+  // 1. Extract idAsamblea from folder name prefix (e.g. "26028 VALPARAISO L2" → 26028)
   const supervisor = await import('@transcriptor/supervisor');
-  const robinson = await import('@transcriptor/robinson');
 
   let idAsamblea: number | undefined;
   let clientName: string | undefined;
 
-  // Try audio file names first (most descriptive), then folder name
-  const hints = [
-    ...folder.audioFiles.map(f => f.name),
-    folder.folderName,
-  ];
-
-  for (const hint of hints) {
-    try {
-      const resolved = await robinson.resolveAssemblyFromHint(hint);
-      if (resolved) {
-        idAsamblea = resolved.idAsamblea;
-        clientName = resolved.cliente;
-        logger.info(`Resolved assembly from "${hint}": idAsamblea=${idAsamblea} (${clientName})`);
-        break;
-      }
-    } catch (err) {
-      logger.warn(`Assembly resolution failed for hint "${hint}": ${(err as Error).message}`);
-    }
-  }
-
-  if (!idAsamblea) {
-    logger.warn(`Could not resolve Tecnoreuniones assembly for folder "${folder.folderName}" — pipeline will proceed without roster data`);
+  const folderMatch = folder.folderName.match(/^(\d+)\s+(.+)/);
+  if (folderMatch) {
+    idAsamblea = Number(folderMatch[1]);
+    clientName = folderMatch[2].trim();
+    logger.info(`Resolved from folder name "${folder.folderName}": idAsamblea=${idAsamblea}, client="${clientName}"`);
+  } else {
+    logger.warn(`Folder "${folder.folderName}" has no numeric prefix — pipeline will proceed without idAsamblea`);
   }
 
   // 2. Create pipeline job via Supervisor
