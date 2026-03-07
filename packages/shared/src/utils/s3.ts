@@ -15,7 +15,7 @@ import {
   ListObjectsV2Command,
   HeadObjectCommand,
 } from '@aws-sdk/client-s3';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { getEnvConfig } from './config.js';
 import { createLogger } from './logger.js';
@@ -156,6 +156,36 @@ export async function listJobFiles(
   } catch {
     return [];
   }
+}
+
+/**
+ * Download all files from an S3 stage to a local directory.
+ * Creates localDir if it doesn't exist.
+ * Returns list of downloaded filenames.
+ */
+export async function downloadJobStage(
+  jobId: string,
+  stage: string,
+  localDir: string,
+): Promise<string[]> {
+  const files = await listJobFiles(jobId, stage);
+  if (files.length === 0) return [];
+
+  if (!existsSync(localDir)) {
+    mkdirSync(localDir, { recursive: true });
+  }
+
+  const downloaded: string[] = [];
+  for (const file of files) {
+    const buffer = await downloadJobFile(jobId, `${stage}/${file}`);
+    if (buffer) {
+      writeFileSync(path.join(localDir, file), buffer);
+      downloaded.push(file);
+    }
+  }
+
+  logger.info(`Downloaded ${downloaded.length} files from S3: jobs/${jobId}/${stage}/ → ${localDir}`);
+  return downloaded;
 }
 
 /**

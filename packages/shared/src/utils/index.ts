@@ -38,6 +38,7 @@ export { getRedisClient, closeRedis } from './redis.js';
 export {
   uploadJobStage,
   downloadJobFile,
+  downloadJobStage,
   listJobFiles,
   jobStageExists,
 } from './s3.js';

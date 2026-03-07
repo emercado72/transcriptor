@@ -483,6 +483,144 @@ export function startServer(port?: number): void {
     }
   });
 
+  // ── Jobs View Endpoints ──
+
+  // List all jobs from Redis, sorted by most recent
+  app.get('/api/jobs', async (_req, res) => {
+    try {
+      const supervisor = await import('@transcriptor/supervisor');
+      const jobIds = await supervisor.listActiveJobs();
+      const jobs: Array<Record<string, unknown>> = [];
+
+      for (const jobId of jobIds) {
+        try {
+          const state = await supervisor.loadState(jobId);
+          const currentStage = state.stages.find(s => s.status === 'processing')
+            ?? state.stages.slice().reverse().find(s => s.status === 'completed')
+            ?? state.stages[0];
+
+          jobs.push({
+            jobId: state.jobId,
+            eventId: state.eventId,
+            clientName: state.clientName || '',
+            status: state.status,
+            currentStage: currentStage?.stage || 'unknown',
+            currentStageStatus: currentStage?.status || 'pending',
+            stages: state.stages,
+            createdAt: state.createdAt,
+            updatedAt: state.updatedAt,
+            delegated: !!state.delegationInfo,
+            delegationWorkerIp: state.delegationInfo?.workerIp || null,
+            elapsedMs: Date.now() - new Date(state.createdAt).getTime(),
+          });
+        } catch {
+          // Skip jobs with corrupt state
+        }
+      }
+
+      // Sort by updatedAt descending
+      jobs.sort((a, b) => new Date(b.updatedAt as string).getTime() - new Date(a.updatedAt as string).getTime());
+      res.json({ jobs });
+    } catch (err) {
+      logger.error('Jobs list error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // S3 data availability per stage for a job
+  app.get('/api/jobs/:jobId/s3-status', async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const { jobStageExists } = await import('@transcriptor/shared');
+      const [transcript, sections, redacted, output] = await Promise.all([
+        jobStageExists(jobId, 'transcript'),
+        jobStageExists(jobId, 'sections'),
+        jobStageExists(jobId, 'redacted'),
+        jobStageExists(jobId, 'output'),
+      ]);
+      res.json({ jobId, s3Stages: { transcript, sections, redacted, output } });
+    } catch (err) {
+      logger.error('S3 status error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Download S3 data + trigger local reprocessing from a given stage
+  app.post('/api/jobs/:jobId/reprocess', async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const { fromStage } = req.body as { fromStage?: string };
+
+      if (!fromStage || !['redacting', 'assembling', 'reviewing'].includes(fromStage)) {
+        return res.status(400).json({ error: 'fromStage must be one of: redacting, assembling, reviewing' });
+      }
+
+      const nodePath = await import('node:path');
+      const { downloadJobStage, publishEvent } = await import('@transcriptor/shared');
+      const supervisor = await import('@transcriptor/supervisor');
+
+      const projectRoot = nodePath.default.resolve(import.meta.dirname, '../../..');
+      const jobDir = nodePath.default.join(projectRoot, 'data', 'jobs', jobId);
+
+      // Download prerequisite stages from S3
+      const downloaded: Record<string, string[]> = {};
+      if (fromStage === 'redacting') {
+        downloaded.transcript = await downloadJobStage(jobId, 'transcript', nodePath.default.join(jobDir, 'transcript'));
+        downloaded.sections = await downloadJobStage(jobId, 'sections', nodePath.default.join(jobDir, 'sections'));
+      } else if (fromStage === 'assembling') {
+        downloaded.redacted = await downloadJobStage(jobId, 'redacted', nodePath.default.join(jobDir, 'redacted'));
+      } else if (fromStage === 'reviewing') {
+        downloaded.output = await downloadJobStage(jobId, 'output', nodePath.default.join(jobDir, 'output'));
+      }
+
+      const totalFiles = Object.values(downloaded).reduce((sum, arr) => sum + arr.length, 0);
+      if (totalFiles === 0) {
+        return res.status(404).json({ error: 'No S3 data found for prerequisite stages' });
+      }
+
+      // Ensure job exists in Redis — create minimal state if cleaned up
+      let job;
+      try {
+        job = await supervisor.loadState(jobId);
+      } catch {
+        // Job was cleaned from Redis — recreate minimal state
+        const { EventStatus } = await import('@transcriptor/shared');
+        job = {
+          jobId,
+          eventId: 'reprocessed',
+          status: EventStatus.QUEUED,
+          stages: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          idAsamblea: '',
+          clientName: 'Reprocessed',
+        };
+        await supervisor.saveState(jobId, job as any);
+      }
+
+      // Publish a retry event for the target stage
+      const stageEventMap: Record<string, string> = {
+        redacting: 'job_retry',
+        assembling: 'job_retry',
+        reviewing: 'job_retry',
+      };
+
+      await publishEvent({
+        type: stageEventMap[fromStage] as any,
+        jobId,
+        agent: 'gloria',
+        timestamp: new Date().toISOString(),
+        data: { stage: fromStage },
+      });
+
+      logger.info(`Job ${jobId} reprocess from ${fromStage}: downloaded ${totalFiles} files, retry event published`);
+      res.json({ ok: true, jobId, fromStage, filesDownloaded: downloaded });
+    } catch (err) {
+      logger.error('Reprocess error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // ── Chucho Queue Endpoint ──
   app.get('/api/agents/chucho/queue', (_req, res) => {
     try {

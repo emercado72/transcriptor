@@ -5,9 +5,10 @@ import type { PipelineOverview } from '../types/index.js';
 interface Props {
   overview: PipelineOverview | null;
   onAutoArrange: () => void;
+  onOpenJobs: () => void;
 }
 
-export default function Toolbar({ overview, onAutoArrange }: Props) {
+export default function Toolbar({ overview, onAutoArrange, onOpenJobs }: Props) {
   const [showSettings, setShowSettings] = useState(false);
   return (
     <div style={{
@@ -59,6 +60,25 @@ export default function Toolbar({ overview, onAutoArrange }: Props) {
         >
           <span style={{ fontSize: '14px' }}>⬡</span>
           Auto-arrange
+        </button>
+        <button
+          onClick={onOpenJobs}
+          style={{
+            background: '#334155',
+            color: '#e2e8f0',
+            border: '1px solid #475569',
+            borderRadius: '6px',
+            padding: '6px 14px',
+            fontSize: '12px',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+          }}
+          title="Job-centered view with S3 reprocessing"
+        >
+          <span style={{ fontSize: '14px' }}>&#128188;</span>
+          Jobs
         </button>
         <button
           onClick={() => setShowSettings(s => !s)}

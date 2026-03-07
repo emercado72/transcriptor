@@ -10,6 +10,7 @@ import LinaFanneryQueuePanel from './components/LinaFanneryQueuePanel.js';
 import GloriaQueuePanel from './components/GloriaQueuePanel.js';
 import FisherQueuePanel from './components/FisherQueuePanel.js';
 import KanbanBoard from './components/KanbanBoard.js';
+import JobsPanel from './components/JobsPanel.js';
 import ReviewPage from './components/ReviewPage.js';
 import ContextMenu from './components/ContextMenu.js';
 import PromptEditor from './components/PromptEditor.js';
@@ -92,8 +93,8 @@ export default function App() {
   const [selectedNode, setSelectedNode] = useState<AgentId | null>(null);
   const [chatAgent, setChatAgent] = useState<AgentId | null>(null);
 
-  // Side panel mode: 'chat' | 'config' | 'queue' | 'kanban' | 'prompt'
-  type SidePanelMode = 'chat' | 'config' | 'queue' | 'kanban' | 'prompt';
+  // Side panel mode: 'chat' | 'config' | 'queue' | 'kanban' | 'prompt' | 'jobs'
+  type SidePanelMode = 'chat' | 'config' | 'queue' | 'kanban' | 'prompt' | 'jobs';
   const [sidePanelMode, setSidePanelMode] = useState<SidePanelMode>('chat');
 
   // Context menu state
@@ -333,7 +334,7 @@ export default function App() {
         </div>
       )}
 
-      <Toolbar overview={overview} onAutoArrange={handleAutoArrange} />
+      <Toolbar overview={overview} onAutoArrange={handleAutoArrange} onOpenJobs={() => setSidePanelMode('jobs')} />
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* Main graph area */}
@@ -448,6 +449,11 @@ export default function App() {
             agentId={chatAgent}
             onClose={() => setChatAgent(null)}
             onSwitchToChat={() => setSidePanelMode('chat')}
+          />
+        )}
+        {sidePanelMode === 'jobs' && (
+          <JobsPanel
+            onClose={() => setSidePanelMode('chat')}
           />
         )}
       </div>
