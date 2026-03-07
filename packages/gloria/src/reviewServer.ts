@@ -960,7 +960,7 @@ export function startServer(port?: number): void {
     const getFisher = async () => {
       if (!fisher) {
         fisher = await import('@transcriptor/fisher');
-        fisher.initFisher();
+        await fisher.initFisher();
       }
       return fisher;
     };
@@ -1047,6 +1047,16 @@ export function startServer(port?: number): void {
         const f = await getFisher();
         const ip = await f.ensureWorker();
         res.json({ ok: true, ip });
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    });
+
+    app.post('/api/agents/fisher/discover', async (_req, res) => {
+      try {
+        const f = await getFisher();
+        const result = await f.discoverWorkers();
+        res.json({ ok: true, ...result });
       } catch (err) {
         res.status(500).json({ error: (err as Error).message });
       }

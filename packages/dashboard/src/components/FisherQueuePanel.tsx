@@ -48,9 +48,20 @@ const PROVISION_STAGES = [
   { key: 'processing', label: 'Online', desc: 'Gloria responding, ready for jobs' },
 ] as const;
 
+interface DiscoveredWorker {
+  instanceId: number;
+  label: string;
+  ip: string;
+  linodeStatus: string;
+  gloriaHealthy: boolean;
+  adopted: boolean;
+}
+
 export default function FisherQueuePanel({ node, onClose, onSwitchToChat }: Props) {
   const [status, setStatus] = useState<FisherStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoverResult, setDiscoverResult] = useState<{ discovered: DiscoveredWorker[]; adopted: DiscoveredWorker | null } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -72,6 +83,27 @@ export default function FisherQueuePanel({ node, onClose, onSwitchToChat }: Prop
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
   }, [status?.worker?.createdAt]);
+
+  const handleDiscover = async () => {
+    setDiscovering(true);
+    setDiscoverResult(null);
+    try {
+      const res = await fetch('/api/agents/fisher/discover', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Discovery failed');
+      setDiscoverResult(data);
+      if (data.adopted) {
+        // Refresh status to reflect adopted worker
+        const sr = await fetch('/api/agents/fisher/status');
+        const sd = await sr.json();
+        setStatus(sd);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDiscovering(false);
+    }
+  };
 
   const w = status?.worker;
   const hb = status?.heartbeats?.[0];
@@ -114,7 +146,38 @@ export default function FisherQueuePanel({ node, onClose, onSwitchToChat }: Prop
           {!w || !w.instanceId ? (
             <div style={{ background: '#1e293b', borderRadius: '8px', padding: '16px', textAlign: 'center' }}>
               <div style={{ fontSize: '24px', marginBottom: '8px' }}>No active workers</div>
-              <div style={{ fontSize: '12px', color: '#64748b' }}>Workers are provisioned on-demand when jobs are queued</div>
+              <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '12px' }}>Workers are provisioned on-demand when jobs are queued</div>
+              <button
+                onClick={handleDiscover}
+                disabled={discovering}
+                style={{
+                  background: '#1d4ed8', border: 'none', borderRadius: '6px', color: '#fff',
+                  padding: '8px 16px', cursor: discovering ? 'wait' : 'pointer', fontSize: '12px',
+                  fontWeight: 600, opacity: discovering ? 0.6 : 1,
+                }}
+              >
+                {discovering ? 'Scanning Linode...' : 'Discover Workers'}
+              </button>
+              {discoverResult && (
+                <div style={{ marginTop: '12px', textAlign: 'left' }}>
+                  {discoverResult.adopted ? (
+                    <div style={{ fontSize: '12px', color: '#22c55e', padding: '8px', background: '#16a34a15', borderRadius: '6px' }}>
+                      Adopted {discoverResult.adopted.label} ({discoverResult.adopted.ip})
+                    </div>
+                  ) : discoverResult.discovered.length === 0 ? (
+                    <div style={{ fontSize: '12px', color: '#94a3b8', padding: '8px' }}>No GPU workers found on Linode</div>
+                  ) : (
+                    <div style={{ fontSize: '12px' }}>
+                      <div style={{ color: '#f97316', marginBottom: '6px' }}>Found {discoverResult.discovered.length} worker(s), none healthy:</div>
+                      {discoverResult.discovered.map(w => (
+                        <div key={w.instanceId} style={{ color: '#94a3b8', padding: '4px 0', borderTop: '1px solid #334155' }}>
+                          {w.label} ({w.ip}) — {w.linodeStatus} / Gloria: {w.gloriaHealthy ? 'up' : 'down'}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             <div style={{ background: '#1e293b', borderRadius: '8px', padding: '12px' }}>
@@ -137,6 +200,24 @@ export default function FisherQueuePanel({ node, onClose, onSwitchToChat }: Prop
                 <div style={{ marginTop: '8px', fontSize: '12px', color: w.state === 'processing' ? '#a3e635' : '#f97316', fontFamily: "'SF Mono', monospace", fontWeight: 600 }}>
                   Elapsed: {formatElapsed(elapsed)}
                 </div>
+              )}
+              {w.error && (
+                <div style={{ marginTop: '8px', fontSize: '11px', color: '#f87171', background: '#ef444410', padding: '6px 8px', borderRadius: '4px' }}>
+                  {w.error}
+                </div>
+              )}
+              {w.state === 'error' && (
+                <button
+                  onClick={handleDiscover}
+                  disabled={discovering}
+                  style={{
+                    marginTop: '10px', background: '#1d4ed8', border: 'none', borderRadius: '6px', color: '#fff',
+                    padding: '6px 14px', cursor: discovering ? 'wait' : 'pointer', fontSize: '11px',
+                    fontWeight: 600, opacity: discovering ? 0.6 : 1, width: '100%',
+                  }}
+                >
+                  {discovering ? 'Scanning Linode...' : 'Discover Workers'}
+                </button>
               )}
             </div>
           )}
