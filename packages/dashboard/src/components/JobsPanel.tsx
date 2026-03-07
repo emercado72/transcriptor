@@ -187,7 +187,7 @@ function ReprocessButton({ jobId, onReprocess }: {
           style={{
             position: 'absolute',
             top: '100%',
-            right: 0,
+            left: 0,
             marginTop: '4px',
             background: '#1e293b',
             border: '1px solid #334155',
