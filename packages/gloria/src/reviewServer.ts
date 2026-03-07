@@ -256,20 +256,61 @@ export function startServer(port?: number): void {
   // ── Delegation endpoint: receive a delegated job from a remote Supervisor ──
   app.post('/api/pipeline/delegate', async (req, res) => {
     try {
-      const { driveFolderId, subfolderId, localJobId, idAsamblea, clientName } = req.body;
+      const { driveFolderId, subfolderId, localJobId, idAsamblea, clientName, eventId } = req.body;
       if (!driveFolderId || !subfolderId) {
         return res.status(400).json({ error: 'driveFolderId and subfolderId required' });
       }
 
       logger.info(`Received delegated job from remote Supervisor (localJobId=${localJobId})`);
 
-      // Step 1: Scan the Drive folder to populate detectedFolders
-      await scanDriveFolder(driveFolderId);
+      // Step 1: Scan the specific subfolder directly (not the parent)
+      // This avoids the race condition where scanDriveFolder hasn't populated
+      // detectedFolders yet when enqueueDetectedFolder is called.
+      const audioExts = new Set(['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac', '.wma']);
+      const votingExts = new Set(['.xlsx', '.csv', '.json', '.xls']);
 
-      // Brief delay for Drive scan to populate detectedFolders
-      await new Promise(r => setTimeout(r, 2000));
+      const contents = await gwDriveListFiles(subfolderId, 100);
+      let audioFiles = contents
+        .filter((f: any) => audioExts.has((f.name.match(/\.[^.]+$/)?.[0] || '').toLowerCase()))
+        .map((f: any) => ({ id: f.id, name: f.name, size: f.size }));
+      let votingFiles = contents
+        .filter((f: any) => votingExts.has((f.name.match(/\.[^.]+$/)?.[0] || '').toLowerCase()))
+        .map((f: any) => ({ id: f.id, name: f.name, size: f.size }));
 
-      // Step 2: Enqueue the specific subfolder
+      // Check child folders (e.g. "Grabacion/") for audio
+      if (audioFiles.length === 0) {
+        const childFolders = contents.filter((f: any) => f.mimeType === 'application/vnd.google-apps.folder');
+        for (const child of childFolders) {
+          const childContents = await gwDriveListFiles(child.id, 100);
+          const childAudio = childContents
+            .filter((f: any) => audioExts.has((f.name.match(/\.[^.]+$/)?.[0] || '').toLowerCase()))
+            .map((f: any) => ({ id: f.id, name: f.name, size: f.size }));
+          const childVoting = childContents
+            .filter((f: any) => votingExts.has((f.name.match(/\.[^.]+$/)?.[0] || '').toLowerCase()))
+            .map((f: any) => ({ id: f.id, name: f.name, size: f.size }));
+          if (childAudio.length > 0) {
+            audioFiles = [...audioFiles, ...childAudio];
+            votingFiles = [...votingFiles, ...childVoting];
+          }
+        }
+      }
+
+      // Get folder name from Drive metadata
+      const folderName = clientName || subfolderId;
+
+      // Register in detectedFolders map so enqueueDetectedFolder can find it
+      const folder: DetectedFolder = {
+        folderId: subfolderId,
+        folderName,
+        audioFiles,
+        votingFiles,
+        status: 'detected',
+        detectedAt: new Date().toISOString(),
+      };
+      detectedFolders.set(subfolderId, folder);
+      logger.info(`Delegation: registered subfolder ${subfolderId} (${folderName}) with ${audioFiles.length} audio files`);
+
+      // Step 2: Enqueue the subfolder (now guaranteed to be in detectedFolders)
       const result = await enqueueDetectedFolder(subfolderId);
       if (!result.success || !result.jobId) {
         throw new Error('Failed to enqueue delegated folder');
