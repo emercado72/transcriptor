@@ -10,7 +10,7 @@
  */
 
 import OpenAI from 'openai';
-import { createLogger, getEnvConfig } from '@transcriptor/shared';
+import { createLogger, getEnvConfig, getLinaModel } from '@transcriptor/shared';
 import type {
   ChunkTranscript,
   SpeakerMap,
@@ -34,9 +34,8 @@ function getClient(): OpenAI {
   });
 }
 
-function getModel(): string {
-  const env = getEnvConfig();
-  return env.linaModel || env.openrouterModel;
+async function getModel(): Promise<string> {
+  return getLinaModel();
 }
 
 function formatTime(seconds: number): string {
@@ -275,7 +274,7 @@ ${JSON.stringify(redisContext.globalSpeakers)}
 Now produce the unified speaker mapping JSON.`;
 
   const client = getClient();
-  const model = getModel();
+  const model = await getModel();
   logger.info(`Using model: ${model} for speaker reconciliation`);
 
   const response = await client.chat.completions.create({

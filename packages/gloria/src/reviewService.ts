@@ -9,7 +9,7 @@
 
 import fs from 'node:fs';
 import OpenAI from 'openai';
-import { createLogger, getEnvConfig, getRedisClient } from '@transcriptor/shared';
+import { createLogger, getEnvConfig, getRedisClient, getGloriaModel } from '@transcriptor/shared';
 import type {
   ReviewItem,
   ReviewItemId,
@@ -43,9 +43,8 @@ function getLLMClient(): OpenAI {
   return llmClient;
 }
 
-function getLLMModel(): string {
-  const env = getEnvConfig();
-  return env.gloriaModel || env.openrouterModel;
+async function getLLMModel(): Promise<string> {
+  return getGloriaModel();
 }
 
 // ── System prompt for inconsistency detection ──
@@ -124,7 +123,7 @@ export async function analyzeDocument(
 
   try {
     const client = getLLMClient();
-    const model = getLLMModel();
+    const model = await getLLMModel();
 
     // The document might be very long; we send it in the user message
     // Claude Sonnet can handle 200k tokens so this should be fine

@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import ModelSettings from './ModelSettings.js';
 import type { PipelineOverview } from '../types/index.js';
 
 interface Props {
@@ -6,6 +8,7 @@ interface Props {
 }
 
 export default function Toolbar({ overview, onAutoArrange }: Props) {
+  const [showSettings, setShowSettings] = useState(false);
   return (
     <div style={{
       display: 'flex',
@@ -37,7 +40,7 @@ export default function Toolbar({ overview, onAutoArrange }: Props) {
       </div>
 
       {/* Right: Actions */}
-      <div style={{ display: 'flex', gap: '8px' }}>
+      <div style={{ display: 'flex', gap: '8px', position: 'relative' }}>
         <button
           onClick={onAutoArrange}
           style={{
@@ -57,6 +60,25 @@ export default function Toolbar({ overview, onAutoArrange }: Props) {
           <span style={{ fontSize: '14px' }}>⬡</span>
           Auto-arrange
         </button>
+        <button
+          onClick={() => setShowSettings(s => !s)}
+          style={{
+            background: showSettings ? '#475569' : '#334155',
+            color: '#e2e8f0',
+            border: '1px solid #475569',
+            borderRadius: '6px',
+            padding: '6px 14px',
+            fontSize: '12px',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+          }}
+          title="LLM model configuration"
+        >
+          &#9881; Models
+        </button>
+        {showSettings && <ModelSettings onClose={() => setShowSettings(false)} />}
       </div>
     </div>
   );

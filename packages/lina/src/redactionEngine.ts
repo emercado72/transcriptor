@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import { createLogger, getEnvConfig } from '@transcriptor/shared';
+import { createLogger, getEnvConfig, getLinaModel } from '@transcriptor/shared';
 import type {
   SectionFile,
   SectionMetadata,
@@ -69,9 +69,8 @@ function getClient(): OpenAI {
   return openaiClient;
 }
 
-function getModel(): string {
-  const env = getEnvConfig();
-  return env.linaModel || env.openrouterModel;
+async function getModel(): Promise<string> {
+  return getLinaModel();
 }
 
 export async function redactSection(
@@ -82,7 +81,7 @@ export async function redactSection(
   logger.info(`Redacting section: ${rawSection.sectionId}`);
 
   const client = getClient();
-  const model = getModel();
+  const model = await getModel();
   logger.info(`Using model: ${model} via OpenRouter`);
 
   // ── Split large sections into chunks for multi-pass redaction ──

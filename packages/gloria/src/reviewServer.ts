@@ -1386,6 +1386,46 @@ Respond ONLY with valid JSON.`,
   });
 
   // ══════════════════════════════════════
+  //  MODEL CONFIGURATION ENDPOINTS
+  // ══════════════════════════════════════
+
+  app.get('/api/config/models', async (_req, res) => {
+    try {
+      const { getModelConfig, getAvailableModels, getLinaModel, getGloriaModel } = await import('@transcriptor/shared');
+      const [config, linaEffective, gloriaEffective] = await Promise.all([
+        getModelConfig(),
+        getLinaModel(),
+        getGloriaModel(),
+      ]);
+      res.json({
+        config,
+        effective: { linaModel: linaEffective, gloriaModel: gloriaEffective },
+        available: getAvailableModels(),
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.put('/api/config/models', async (req, res) => {
+    try {
+      const { setModelConfig, getLinaModel, getGloriaModel } = await import('@transcriptor/shared');
+      const updated = await setModelConfig(req.body);
+      const [linaEffective, gloriaEffective] = await Promise.all([
+        getLinaModel(),
+        getGloriaModel(),
+      ]);
+      logger.info(`Model config updated: lina=${linaEffective}, gloria=${gloriaEffective}`);
+      res.json({
+        config: updated,
+        effective: { linaModel: linaEffective, gloriaModel: gloriaEffective },
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ══════════════════════════════════════
   //  GLORIA REVIEW ENDPOINTS
   // ══════════════════════════════════════
 

@@ -62,3 +62,11 @@ export {
   unregisterAgent,
 } from './agentRegistry.js';
 export { tokenOverlapRatio, findWordOverlap } from './textDedup.js';
+export {
+  getAvailableModels,
+  getModelConfig,
+  setModelConfig,
+  getLinaModel,
+  getGloriaModel,
+  type ModelConfig,
+} from './runtimeConfig.js';
