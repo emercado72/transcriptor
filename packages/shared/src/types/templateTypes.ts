@@ -25,6 +25,17 @@ export interface GlossaryEntry {
   clientId: string | null;
 }
 
+/**
+ * Supported OpenRouter model IDs for per-agent overrides (Lina / Gloria).
+ * Set LINA_MODEL or GLORIA_MODEL in .env.local to test alternatives.
+ */
+export type OpenRouterModelId =
+  | 'anthropic/claude-sonnet-4.6'
+  | 'google/gemini-3-flash-preview'
+  | 'deepseek/deepseek-v3.2'
+  | 'qwen/qwen3.5-plus-02-15'
+  | (string & {});
+
 export interface EnvConfig {
   nodeEnv: string;
   port: number;
@@ -37,6 +48,10 @@ export interface EnvConfig {
   groqModel: string;
   openrouterApiKey: string;
   openrouterModel: string;
+  /** Model override for Lina (redaction + speaker reconciliation). Falls back to openrouterModel. */
+  linaModel: string;
+  /** Model override for Gloria (document review). Falls back to openrouterModel. */
+  gloriaModel: string;
   elevenLabsApiKey: string;
   googleClientId: string;
   googleClientSecret: string;

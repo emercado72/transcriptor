@@ -71,7 +71,7 @@ function getClient(): OpenAI {
 
 function getModel(): string {
   const env = getEnvConfig();
-  return env.openrouterModel;
+  return env.linaModel || env.openrouterModel;
 }
 
 export async function redactSection(

@@ -44,7 +44,8 @@ function getLLMClient(): OpenAI {
 }
 
 function getLLMModel(): string {
-  return getEnvConfig().openrouterModel || 'anthropic/claude-sonnet-4';
+  const env = getEnvConfig();
+  return env.gloriaModel || env.openrouterModel;
 }
 
 // ── System prompt for inconsistency detection ──
