@@ -163,18 +163,28 @@ fi
 
 # -- [7/8] Download pre-built node_modules -----------
 echo ""
-echo "=== [7/8] Download pre-built node_modules + dist (60 MB) ==="
+echo "=== [7/8] Download pre-built node_modules (60 MB) ==="
 cd "$TRANSCRIPTOR_DIR"
 if [ -d "node_modules/.pnpm" ]; then
-  echo "  node_modules already exists, skipping"
+  echo "  node_modules already exists, skipping download"
 else
   echo "  Downloading..."
   wget -q --show-progress -O "$NODE_TARBALL" "$S3_PUBLIC_BASE/$NODE_TARBALL"
   echo "  Extracting..."
   tar xzf "$NODE_TARBALL"
   rm -f "$NODE_TARBALL"
-  echo "  OK node_modules + dist ready"
+  echo "  OK node_modules downloaded"
 fi
+
+# Always rebuild dist/ from latest source (tarball may have stale compiled code)
+echo "  Rebuilding dist/ from source..."
+cd "$TRANSCRIPTOR_DIR"
+pnpm --filter @transcriptor/shared build 2>&1 | tail -1
+pnpm --filter @transcriptor/supervisor build 2>&1 | tail -1
+pnpm --filter @transcriptor/fisher build 2>&1 | tail -1
+pnpm --filter @transcriptor/dashboard build 2>&1 | tail -1
+pnpm gloria:build 2>&1 | tail -1
+echo "  OK dist/ rebuilt from latest source"
 
 # -- [8/8] Secrets + systemd service -----------------
 echo ""
