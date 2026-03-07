@@ -49,9 +49,9 @@ export function buildSectionInstructions(sectionStyle: SectionStyle): string {
     paragraphNormal: 'Redacta en narrativa formal legal el contenido de esta sección, usando lenguaje propio de actas de propiedad horizontal colombiana.',
     paragraphBold: 'Redacta el título o encabezado de sección en negrilla.',
     intervention: 'Redacta las intervenciones identificando al propietario por nombre y unidad. Usa el formato: "El(la) señor(a) [NOMBRE], propietario(a) de la unidad [UNIDAD], manifiesta que..."',
-    votingQuestion: 'Presenta la pregunta de votación tal como fue formulada, seguida de los resultados obtenidos de Robinson.',
-    votingResults: 'Inserta la tabla de resultados de votación con coeficientes, porcentaje de asistentes y nominal.',
-    votingAnnouncement: 'Redacta el anuncio de resultados de la votación: "Se aprueba/rechaza con el XX.XX% de coeficientes..."',
+    votingQuestion: 'Redacta el contexto narrativo de la votación (quién propuso, qué se discutió). NO escribas el texto literal de la pregunta ni los porcentajes de resultados — inserta el marcador [VOTACION PREGUNTA N] donde se anunciaron los resultados y Fannery agregará la pregunta oficial y la tabla automáticamente. Después del marcador, redacta solo la conclusión ("quedó APROBADA/RECHAZADA por mayoría...").',
+    votingResults: 'NO escribas tabla de resultados manualmente. Usa el marcador [VOTACION PREGUNTA N] y Fannery insertará la tabla automáticamente.',
+    votingAnnouncement: 'Redacta el anuncio de resultados de la votación sin cifras específicas: "Se aprueba/rechaza por mayoría..." Las cifras exactas las insertará Fannery.',
     firma: 'Genera el bloque de firmas con los nombres del presidente, secretario(a) y verificadores de quórum.',
   };
 
@@ -154,10 +154,14 @@ Durante la redaccion, cuando el texto transcrito indique que se realizo una vota
 
 > [VOTACION PREGUNTA N]
 
-Donde N es el numero de la pregunta en la lista. Fannery reemplazara ese marcador con la tabla de resultados automaticamente. Usa tu criterio para mapear la descripcion oral a la pregunta correcta (el texto de la transcripcion parafrasea la pregunta original).
+Donde N es el numero de la pregunta en la lista. Fannery reemplazara ese marcador con la pregunta oficial y la tabla de resultados automaticamente. Usa tu criterio para mapear la descripcion oral a la pregunta correcta (el texto de la transcripcion parafrasea la pregunta original).
 
 Lista de preguntas en orden cronologico:
 ${lines}
 
-REGLA CRITICA: Inserta UN SOLO marcador por pregunta, en el parrafo donde se presentaron los resultados de la votacion. NO insertes el marcador donde se anuncia o abre la votacion, solo donde se mencionan los resultados. NUNCA dupliques un marcador.`.trim();
+REGLAS CRITICAS DE VOTACION:
+1. Inserta UN SOLO marcador por pregunta, en el parrafo donde se presentaron los resultados de la votacion. NO insertes el marcador donde se anuncia o abre la votacion, solo donde se mencionan los resultados. NUNCA dupliques un marcador.
+2. NO escribas el texto de la pregunta de votacion en la redaccion — Fannery lo insertara automaticamente desde los datos oficiales de Robinson junto con el marcador.
+3. NO escribas los porcentajes ni cifras especificas de los resultados de la votacion (ej. "por el SI se obtuvo el 72.16%") — Fannery insertara la tabla completa de resultados. En su lugar, despues del marcador redacta solo la conclusion: "En consecuencia, quedo APROBADA/RECHAZADA por mayoria..." sin repetir las cifras.
+4. El marcador debe estar en su propia linea, precedido por ">". Antes del marcador describe brevemente que se sometio a votacion, y despues del marcador redacta la conclusion.`.trim();
 }
