@@ -66,6 +66,20 @@ export default function QueuePanel({ node, onClose, onSwitchToChat, onSwitchToCo
     }
   }, [fetchQueue]);
 
+  const handleReset = useCallback(async (folderId: string) => {
+    try {
+      const res = await fetch('/api/agents/yulieth/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folderId }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      await fetchQueue();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Reset failed');
+    }
+  }, [fetchQueue]);
+
   const statusColor = (s: string) => {
     switch (s) {
       case 'detected': return '#f59e0b';
@@ -273,6 +287,25 @@ export default function QueuePanel({ node, onClose, onSwitchToChat, onSwitchToCo
                       }}
                     >
                       📋 Queue for Processing
+                    </button>
+                  )}
+                  {folder.status !== 'detected' && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleReset(folder.folderId); }}
+                      style={{
+                        marginTop: '10px',
+                        width: '100%',
+                        background: 'transparent',
+                        color: '#f59e0b',
+                        border: '1px solid #f59e0b55',
+                        borderRadius: '6px',
+                        padding: '8px',
+                        fontSize: '12px',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      🔄 Reset to Detected
                     </button>
                   )}
                 </div>
