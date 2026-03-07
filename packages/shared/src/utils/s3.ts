@@ -68,7 +68,7 @@ function getMimeType(filename: string): string {
  */
 export async function uploadJobStage(
   jobId: string,
-  stage: 'redacted' | 'output',
+  stage: 'transcript' | 'sections' | 'redacted' | 'output',
   localDir: string,
 ): Promise<string[]> {
   const client = getClient();

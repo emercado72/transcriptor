@@ -137,6 +137,15 @@ export async function processJob(jobId: string): Promise<LinaResult> {
   }, null, 2), 'utf-8');
   logger.info(`Saved reconciled transcript: ${reconciledTranscriptPath}`);
 
+  // Upload transcript to S3
+  try {
+    const { uploadJobStage } = await import('@transcriptor/shared');
+    await uploadJobStage(jobId, 'transcript', transcriptDir);
+    logger.info(`Uploaded transcript to S3 for job ${jobId}`);
+  } catch (e) {
+    logger.error(`S3 upload failed for transcript: ${(e as Error).message}`);
+  }
+
   // ──────────────────────────────────────────────
   // Step 3: Build sections from reconciled transcript
   // ──────────────────────────────────────────────
@@ -159,6 +168,15 @@ export async function processJob(jobId: string): Promise<LinaResult> {
   for (const section of rawSections) {
     const sectionPath = path.join(sectionsDir, `${section.sectionId}.json`);
     await fs.writeFile(sectionPath, JSON.stringify(section, null, 2), 'utf-8');
+  }
+
+  // Upload sections to S3
+  try {
+    const { uploadJobStage } = await import('@transcriptor/shared');
+    await uploadJobStage(jobId, 'sections', sectionsDir);
+    logger.info(`Uploaded sections to S3 for job ${jobId}`);
+  } catch (e) {
+    logger.error(`S3 upload failed for sections: ${(e as Error).message}`);
   }
 
   // ──────────────────────────────────────────────
@@ -222,7 +240,7 @@ export async function processJob(jobId: string): Promise<LinaResult> {
     await uploadJobStage(jobId, 'redacted', redactedDir);
     logger.info(`Uploaded redacted sections to S3 for job ${jobId}`);
   } catch (e) {
-    logger.warn(`S3 upload failed (non-fatal): ${(e as Error).message}`);
+    logger.error(`S3 upload failed for redacted: ${(e as Error).message}`);
   }
 
   markLinaRedactionComplete(jobId, {

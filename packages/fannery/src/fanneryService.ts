@@ -193,7 +193,7 @@ export async function processJob(jobId: string): Promise<FanneryResult> {
     await uploadJobStage(jobId, 'output', outputDir);
     logger.info(`Uploaded assembly output to S3 for job ${jobId}`);
   } catch (e) {
-    logger.warn(`S3 upload failed (non-fatal): ${(e as Error).message}`);
+    logger.error(`S3 upload failed for output: ${(e as Error).message}`);
   }
 
   // ──────────────────────────────────────────────
