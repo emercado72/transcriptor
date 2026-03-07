@@ -1969,19 +1969,21 @@ Respond ONLY with valid JSON.`,
           }
         }
 
-        // Cleanup on shutdown
-        process.on('SIGTERM', () => {
+        // Cleanup on shutdown — must actually exit after stopping pollers
+        const gracefulShutdown = (signal: string) => {
+          logger.info(`Received ${signal} — shutting down gracefully`);
           stopHeartbeats.forEach(fn => fn());
           if (RUNTIME_MODE === 'local') {
-            import('@transcriptor/supervisor').then(s => s.stopAllPollers?.()).catch(() => {});
+            import('@transcriptor/supervisor').then(s => {
+              s.stopAllPollers?.();
+              process.exit(0);
+            }).catch(() => process.exit(0));
+          } else {
+            process.exit(0);
           }
-        });
-        process.on('SIGINT', () => {
-          stopHeartbeats.forEach(fn => fn());
-          if (RUNTIME_MODE === 'local') {
-            import('@transcriptor/supervisor').then(s => s.stopAllPollers?.()).catch(() => {});
-          }
-        });
+        };
+        process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+        process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
         logger.info('Startup recovery complete — Supervisor orchestrator running');
       } catch (err) {
