@@ -47,7 +47,7 @@ export function buildSectionInstructions(sectionStyle: SectionStyle): string {
     preambulo: 'Redacta el preámbulo formal indicando convocatoria, verificación de quórum con coeficientes, y declaración de apertura.',
     ordenDelDia: 'Lista los puntos del orden del día tal como fueron leídos y aprobados por la asamblea.',
     paragraphNormal: 'Redacta en narrativa formal legal el contenido de esta sección, usando lenguaje propio de actas de propiedad horizontal colombiana.',
-    paragraphBold: 'Redacta el título o encabezado de sección en negrilla.',
+    paragraphBold: 'NO incluyas el título de la sección en tu redacción — Fannery lo insertará automáticamente como encabezado. Comienza directamente con el contenido narrativo de la sección.',
     intervention: 'Redacta las intervenciones identificando al propietario por nombre y unidad. Usa el formato: "El(la) señor(a) [NOMBRE], propietario(a) de la unidad [UNIDAD], manifiesta que..."',
     votingQuestion: 'Redacta el contexto narrativo de la votación (quién propuso, qué se discutió). NO escribas el texto literal de la pregunta ni los porcentajes de resultados — inserta el marcador [VOTACION PREGUNTA N] donde se anunciaron los resultados y Fannery agregará la pregunta oficial y la tabla automáticamente. Después del marcador, redacta solo la conclusión ("quedó APROBADA/RECHAZADA por mayoría...").',
     votingResults: 'NO escribas tabla de resultados manualmente. Usa el marcador [VOTACION PREGUNTA N] y Fannery insertará la tabla automáticamente.',

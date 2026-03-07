@@ -221,6 +221,7 @@ ${rawSection.rawText}
 
 ## Tu tarea
 Redacta esta sección en formato de acta formal. Usa los nombres completos y unidades del roster de asistentes para identificar a los propietarios — NO uses [VERIFICAR]. Devuelve SOLO el texto redactado, sin explicaciones adicionales.
+IMPORTANTE: NO repitas el título de la sección ("${rawSection.sectionTitle}") en tu redacción — Fannery lo inserta automáticamente como encabezado del documento. Comienza directamente con el contenido narrativo.
 `.trim();
 }
 
