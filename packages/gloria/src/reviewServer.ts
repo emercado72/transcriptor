@@ -253,6 +253,28 @@ export function startServer(port?: number): void {
     }
   });
 
+  // Reset stuck Yulieth folders back to "detected" so they can be re-queued
+  app.post('/api/agents/yulieth/reset', async (req, res) => {
+    try {
+      const { folderId } = req.body; // optional: reset a specific folder, or all if omitted
+      let resetCount = 0;
+      for (const [id, folder] of detectedFolders.entries()) {
+        if (folderId && id !== folderId) continue;
+        if (folder.status !== 'detected') {
+          logger.info(`Yulieth reset: ${folder.folderName} (${folder.status} → detected)`);
+          folder.status = 'detected';
+          delete folder.jobId;
+          resetCount++;
+        }
+      }
+      void persistDetectedFolders();
+      res.json({ ok: true, resetCount });
+    } catch (err) {
+      logger.error('Yulieth reset error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // ── Delegation endpoint: receive a delegated job from a remote Supervisor ──
   app.post('/api/pipeline/delegate', async (req, res) => {
     try {
