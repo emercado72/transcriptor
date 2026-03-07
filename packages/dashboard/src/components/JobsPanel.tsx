@@ -149,17 +149,19 @@ function S3Dots({ s3: s3Stages, loading }: { s3: S3Stages | null; loading: boole
 
 // ── Reprocess Dropdown ──
 
-function ReprocessButton({ jobId, s3Stages, onReprocess }: {
+function ReprocessButton({ jobId, onReprocess }: {
   jobId: string;
-  s3Stages: S3Stages | null;
   onReprocess: (jobId: string, fromStage: string) => void;
 }) {
   const [open, setOpen] = useState(false);
 
   const options = [
-    { stage: 'redacting', label: 'From Redacting (Lina)', needs: s3Stages?.transcript && s3Stages?.sections },
-    { stage: 'assembling', label: 'From Assembling (Fannery)', needs: s3Stages?.redacted },
-    { stage: 'reviewing', label: 'From Reviewing (Gloria)', needs: s3Stages?.output },
+    { stage: 'preprocessing', label: 'From Preprocessing (Chucho)' },
+    { stage: 'transcribing', label: 'From Transcribing (Jaime)' },
+    { stage: 'sectioning', label: 'From Sectioning (Jaime)' },
+    { stage: 'redacting', label: 'From Redacting (Lina)' },
+    { stage: 'assembling', label: 'From Assembling (Fannery)' },
+    { stage: 'reviewing', label: 'From Reviewing (Gloria)' },
   ];
 
   return (
@@ -196,10 +198,9 @@ function ReprocessButton({ jobId, s3Stages, onReprocess }: {
             boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
           }}
         >
-          {options.map(({ stage, label, needs }) => (
+          {options.map(({ stage, label }) => (
             <button
               key={stage}
-              disabled={!needs}
               onClick={() => { onReprocess(jobId, stage); setOpen(false); }}
               style={{
                 display: 'block',
@@ -209,16 +210,14 @@ function ReprocessButton({ jobId, s3Stages, onReprocess }: {
                 background: 'transparent',
                 border: 'none',
                 borderRadius: '4px',
-                color: needs ? '#e2e8f0' : '#475569',
-                cursor: needs ? 'pointer' : 'not-allowed',
+                color: '#e2e8f0',
+                cursor: 'pointer',
                 fontSize: '12px',
-                opacity: needs ? 1 : 0.5,
               }}
-              onMouseOver={(e) => needs && (e.currentTarget.style.background = '#334155')}
+              onMouseOver={(e) => (e.currentTarget.style.background = '#334155')}
               onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
             >
               {label}
-              {!needs && <span style={{ fontSize: '10px', marginLeft: '4px' }}>(no S3 data)</span>}
             </button>
           ))}
         </div>
@@ -583,7 +582,6 @@ export default function JobsPanel({ onClose }: Props) {
                     {/* Reprocess from S3 */}
                     <ReprocessButton
                       jobId={job.jobId}
-                      s3Stages={s3Cache[job.jobId] || null}
                       onReprocess={handleReprocess}
                     />
 

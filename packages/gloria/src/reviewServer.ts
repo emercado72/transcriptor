@@ -551,8 +551,9 @@ export function startServer(port?: number): void {
       const { jobId } = req.params;
       const { fromStage } = req.body as { fromStage?: string };
 
-      if (!fromStage || !['redacting', 'assembling', 'reviewing'].includes(fromStage)) {
-        return res.status(400).json({ error: 'fromStage must be one of: redacting, assembling, reviewing' });
+      const validStages = ['preprocessing', 'transcribing', 'sectioning', 'redacting', 'assembling', 'reviewing'];
+      if (!fromStage || !validStages.includes(fromStage)) {
+        return res.status(400).json({ error: `fromStage must be one of: ${validStages.join(', ')}` });
       }
 
       const nodePath = await import('node:path');
@@ -562,20 +563,19 @@ export function startServer(port?: number): void {
       const projectRoot = nodePath.default.resolve(import.meta.dirname, '../../..');
       const jobDir = nodePath.default.join(projectRoot, 'data', 'jobs', jobId);
 
-      // Download prerequisite stages from S3
+      // Download prerequisite stages from S3 (only for stages that have S3 data)
       const downloaded: Record<string, string[]> = {};
-      if (fromStage === 'redacting') {
-        downloaded.transcript = await downloadJobStage(jobId, 'transcript', nodePath.default.join(jobDir, 'transcript'));
-        downloaded.sections = await downloadJobStage(jobId, 'sections', nodePath.default.join(jobDir, 'sections'));
-      } else if (fromStage === 'assembling') {
-        downloaded.redacted = await downloadJobStage(jobId, 'redacted', nodePath.default.join(jobDir, 'redacted'));
-      } else if (fromStage === 'reviewing') {
-        downloaded.output = await downloadJobStage(jobId, 'output', nodePath.default.join(jobDir, 'output'));
-      }
+      const s3Prerequisites: Record<string, string[]> = {
+        redacting: ['transcript', 'sections'],
+        assembling: ['redacted'],
+        reviewing: ['output'],
+      };
 
-      const totalFiles = Object.values(downloaded).reduce((sum, arr) => sum + arr.length, 0);
-      if (totalFiles === 0) {
-        return res.status(404).json({ error: 'No S3 data found for prerequisite stages' });
+      const prereqs = s3Prerequisites[fromStage];
+      if (prereqs) {
+        for (const stage of prereqs) {
+          downloaded[stage] = await downloadJobStage(jobId, stage, nodePath.default.join(jobDir, stage));
+        }
       }
 
       // Ensure job exists in Redis — create minimal state if cleaned up
@@ -599,21 +599,16 @@ export function startServer(port?: number): void {
       }
 
       // Publish a retry event for the target stage
-      const stageEventMap: Record<string, string> = {
-        redacting: 'job_retry',
-        assembling: 'job_retry',
-        reviewing: 'job_retry',
-      };
-
       await publishEvent({
-        type: stageEventMap[fromStage] as any,
+        type: 'job_retry' as any,
         jobId,
         agent: 'gloria',
         timestamp: new Date().toISOString(),
         data: { stage: fromStage },
       });
 
-      logger.info(`Job ${jobId} reprocess from ${fromStage}: downloaded ${totalFiles} files, retry event published`);
+      const totalFiles = Object.values(downloaded).reduce((sum, arr) => sum + arr.length, 0);
+      logger.info(`Job ${jobId} reprocess from ${fromStage}: downloaded ${totalFiles} S3 files, retry event published`);
       res.json({ ok: true, jobId, fromStage, filesDownloaded: downloaded });
     } catch (err) {
       logger.error('Reprocess error', err as Error);
