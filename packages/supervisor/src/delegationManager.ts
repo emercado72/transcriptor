@@ -29,6 +29,8 @@ interface DelegationPayload {
   idAsamblea?: number;
   clientName?: string;
   eventId: string;
+  /** When set, GPU worker reprocesses from this stage instead of running the full pipeline */
+  fromStage?: string;
 }
 
 // ── Core delegation ──
@@ -42,7 +44,7 @@ interface DelegationPayload {
  * 4. POST to remote /api/pipeline/delegate
  * 5. Mark job as DELEGATED + start polling
  */
-export async function delegateJob(jobId: string, driveFolderId: string): Promise<void> {
+export async function delegateJob(jobId: string, driveFolderId: string, fromStage?: string): Promise<void> {
   const job = await stateManager.loadState(jobId);
   const subfolderId = job.eventId;
 
@@ -103,6 +105,7 @@ export async function delegateJob(jobId: string, driveFolderId: string): Promise
       idAsamblea: job.idAsamblea,
       clientName: job.clientName,
       eventId: job.eventId,
+      ...(fromStage && { fromStage }),
     };
 
     const res = await fetch(`http://${workerIp}:3001/api/pipeline/delegate`, {

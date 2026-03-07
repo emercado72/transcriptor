@@ -17,7 +17,7 @@ import {
 } from '@transcriptor/shared';
 import type { PipelineJob } from '@transcriptor/shared';
 import * as stateManager from './stateManager.js';
-import { delegateJob } from './delegationManager.js';
+import { delegateJob, shouldDelegate } from './delegationManager.js';
 import { PIPELINE_STAGES } from './supervisorService.js';
 
 const logger = createLogger('supervisor:reprocess');
@@ -169,35 +169,46 @@ export async function reprocessJob(
   const job = await stateManager.loadState(jobId);
   logger.info(`Job ${jobId}: reprocess from ${fromStage} requested (current: ${job.status})`);
 
-  // 3. Audio-dependent stages
-  if (prereqs.needsAudio) {
-    const hasAudio = prereqs.localDirs.some(dir => hasLocalAudio(jobId, dir));
-
-    if (!hasAudio) {
-      logger.info(`Job ${jobId}: audio not available locally, delegating to GPU worker`);
-
-      // Reset state for delegation
+  // 3. Delegation check — delegate ALL reprocessing to GPU worker when enabled
+  if (shouldDelegate()) {
+    if (prereqs.needsAudio) {
+      // Audio-dependent: full pipeline delegation (GPU downloads from Drive)
+      logger.info(`Job ${jobId}: delegation enabled, delegating audio-dependent stage to GPU worker`);
       await resetJobForReprocess(jobId, EventStatus.QUEUED, true);
-
-      // Resolve Drive folder and delegate
       const driveFolderId = resolveDriveFolderId();
       await delegateJob(jobId, driveFolderId);
-
-      return {
-        ok: true,
-        jobId,
-        fromStage,
-        strategy: 'delegated',
-        s3Downloaded: {},
-        message: 'Audio not available locally. Delegated to GPU worker for full reprocessing from Drive.',
-      };
+    } else {
+      // Text-only: delegate reprocess from specific stage (GPU downloads from S3)
+      logger.info(`Job ${jobId}: delegation enabled, delegating reprocess of ${fromStage} to GPU worker`);
+      await resetJobForReprocess(jobId, EventStatus.QUEUED, true);
+      const driveFolderId = resolveDriveFolderId();
+      await delegateJob(jobId, driveFolderId, fromStage);
     }
 
-    // Audio found locally — proceed with local retry
+    return {
+      ok: true,
+      jobId,
+      fromStage,
+      strategy: 'delegated',
+      s3Downloaded: {},
+      message: `Delegated reprocess of ${fromStage} to GPU worker.`,
+    };
+  }
+
+  // 4. Local processing — only when delegation is disabled or on GPU worker itself
+
+  // Audio-dependent stages: verify local audio exists
+  if (prereqs.needsAudio) {
+    const hasAudio = prereqs.localDirs.some(dir => hasLocalAudio(jobId, dir));
+    if (!hasAudio) {
+      throw new Error(
+        `Cannot reprocess ${fromStage} locally: audio not available in ${prereqs.localDirs.join(', ')}`,
+      );
+    }
     logger.info(`Job ${jobId}: audio found locally, retrying ${fromStage} locally`);
   }
 
-  // 4. Download S3 prerequisites (text-only stages)
+  // Download S3 prerequisites (text-only stages)
   const s3Downloaded = prereqs.s3Stages.length > 0
     ? await downloadS3Prerequisites(jobId, prereqs.s3Stages)
     : {};

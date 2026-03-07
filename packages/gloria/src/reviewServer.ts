@@ -278,11 +278,42 @@ export function startServer(port?: number): void {
   // ── Delegation endpoint: receive a delegated job from a remote Supervisor ──
   app.post('/api/pipeline/delegate', async (req, res) => {
     try {
-      const { driveFolderId, subfolderId, localJobId, idAsamblea, clientName, eventId } = req.body;
+      const { driveFolderId, subfolderId, localJobId, idAsamblea, clientName, eventId, fromStage } = req.body;
       if (!driveFolderId || !subfolderId) {
         return res.status(400).json({ error: 'driveFolderId and subfolderId required' });
       }
 
+      // ── Reprocess delegation: GPU worker runs a specific stage (text-only) ──
+      if (fromStage) {
+        logger.info(`Received delegated REPROCESS from remote Supervisor (localJobId=${localJobId}, fromStage=${fromStage})`);
+
+        // Create a job on this worker so reprocessJob can find it
+        const supervisor = await import('@transcriptor/supervisor');
+        const job = await supervisor.initPipeline(subfolderId, { folderId: subfolderId } as any, {
+          idAsamblea,
+          clientName,
+        });
+
+        // Mark earlier stages as completed so reprocessJob only runs fromStage onward
+        const stageOrder = ['preprocessing', 'transcribing', 'sectioning', 'redacting', 'assembling', 'reviewing'];
+        const targetIdx = stageOrder.indexOf(fromStage);
+        for (let i = 0; i < targetIdx; i++) {
+          const entry = job.stages.find(s => s.stage === stageOrder[i]);
+          if (entry) {
+            entry.status = 'completed' as any;
+            entry.completedAt = new Date().toISOString();
+          }
+        }
+        await supervisor.saveState(job.jobId, job);
+
+        // Run reprocess — on GPU worker shouldDelegate()=false, so it runs locally
+        const result = await supervisor.reprocessJob(job.jobId, fromStage);
+        logger.info(`Delegated reprocess started: job ${job.jobId} from ${fromStage}`);
+
+        return res.json({ ok: true, remoteJobId: job.jobId, localJobId, reprocess: true, result });
+      }
+
+      // ── Full pipeline delegation: scan Drive, download, run from scratch ──
       logger.info(`Received delegated job from remote Supervisor (localJobId=${localJobId})`);
 
       // Step 1: Scan the specific subfolder directly (not the parent)
