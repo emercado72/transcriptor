@@ -199,6 +199,15 @@ export async function processJob(
   await fs.writeFile(transcriptPath, JSON.stringify(mergedTranscript, null, 2), 'utf-8');
   logger.info(`Raw transcript saved: ${transcriptPath}`);
 
+  // Upload transcript to S3
+  try {
+    const { uploadJobStage } = await import('@transcriptor/shared');
+    await uploadJobStage(jobId, 'transcript', transcriptDir);
+    logger.info(`Uploaded transcript to S3 for job ${jobId}`);
+  } catch (e) {
+    logger.error(`S3 upload failed for transcript: ${(e as Error).message}`);
+  }
+
   // 4. Run QA
   logger.info('Running transcription QA...');
   const sections = await mapTranscriptToSections(mergedTranscript, questionList);
@@ -221,6 +230,15 @@ export async function processJob(
     await fs.writeFile(sectionPath, JSON.stringify(section, null, 2), 'utf-8');
   }
   logger.info(`Wrote ${sections.length} section files to ${sectionsDir}`);
+
+  // Upload sections to S3
+  try {
+    const { uploadJobStage } = await import('@transcriptor/shared');
+    await uploadJobStage(jobId, 'sections', sectionsDir);
+    logger.info(`Uploaded sections to S3 for job ${jobId}`);
+  } catch (e) {
+    logger.error(`S3 upload failed for sections: ${(e as Error).message}`);
+  }
 
   // 8. Write QA report
   const qaPath = path.join(sectionsDir, 'qa_report.json');
