@@ -207,9 +207,12 @@ s3cmd get "$S3_SECRETS/agent-prompts.json" "$TRANSCRIPTOR_DIR/config/agent-promp
 cat > /opt/transcriptor/update-and-build.sh << 'UPDATESCRIPT'
 #!/bin/bash
 set -e
+export CI=true
 cd /opt/transcriptor/transcriptor
 echo "[update] $(date -u '+%Y-%m-%d %H:%M:%S UTC') Pulling latest from main..."
 git pull origin main --ff-only 2>&1 | tail -3
+echo "[update] Installing platform-specific dependencies..."
+pnpm install --frozen-lockfile 2>&1 | tail -3
 echo "[update] Rebuilding dist/ from source..."
 pnpm --filter @transcriptor/shared build 2>&1 | tail -1
 pnpm --filter @transcriptor/supervisor build 2>&1 | tail -1
