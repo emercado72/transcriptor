@@ -176,15 +176,8 @@ else
   echo "  OK node_modules downloaded"
 fi
 
-# Always rebuild dist/ from latest source (tarball may have stale compiled code)
-echo "  Rebuilding dist/ from source..."
-cd "$TRANSCRIPTOR_DIR"
-pnpm --filter @transcriptor/shared build 2>&1 | tail -1
-pnpm --filter @transcriptor/supervisor build 2>&1 | tail -1
-pnpm --filter @transcriptor/fisher build 2>&1 | tail -1
-pnpm --filter @transcriptor/dashboard build 2>&1 | tail -1
-pnpm gloria:build 2>&1 | tail -1
-echo "  OK dist/ rebuilt from latest source"
+# NOTE: dist/ rebuild happens via ExecStartPre in the Gloria systemd service
+# (see update-and-build.sh). This ensures latest code on every Gloria start.
 
 # -- [8/8] Secrets + systemd service -----------------
 echo ""
@@ -210,7 +203,25 @@ s3cmd get "$S3_SECRETS/agent-prompts.json" "$TRANSCRIPTOR_DIR/config/agent-promp
   echo "  OK agent-prompts.json downloaded" || \
   echo "  WARN agent-prompts.json not found in S3 (will use defaults)"
 
+# Gloria update script (git pull + rebuild before every start)
+cat > /opt/transcriptor/update-and-build.sh << 'UPDATESCRIPT'
+#!/bin/bash
+set -e
+cd /opt/transcriptor/transcriptor
+echo "[update] $(date -u '+%Y-%m-%d %H:%M:%S UTC') Pulling latest from main..."
+git pull origin main --ff-only 2>&1 | tail -3
+echo "[update] Rebuilding dist/ from source..."
+pnpm --filter @transcriptor/shared build 2>&1 | tail -1
+pnpm --filter @transcriptor/supervisor build 2>&1 | tail -1
+pnpm --filter @transcriptor/fisher build 2>&1 | tail -1
+pnpm --filter @transcriptor/dashboard build 2>&1 | tail -1
+pnpm gloria:build 2>&1 | tail -1
+echo "[update] Done - dist/ rebuilt from latest source"
+UPDATESCRIPT
+chmod +x /opt/transcriptor/update-and-build.sh
+
 # Gloria systemd service (auto-restart on crash, survives SSH disconnect)
+# ExecStartPre runs git pull + rebuild so Gloria always starts with latest code
 cat > /etc/systemd/system/gloria.service << EOF
 [Unit]
 Description=Gloria Review Server - Transcriptor Pipeline
@@ -219,6 +230,7 @@ After=redis-server.service network.target
 [Service]
 Type=simple
 WorkingDirectory=$TRANSCRIPTOR_DIR
+ExecStartPre=/opt/transcriptor/update-and-build.sh
 ExecStart=/usr/bin/node packages/gloria/dist/reviewServer.js
 Restart=on-failure
 RestartSec=5
