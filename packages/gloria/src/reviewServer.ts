@@ -4065,7 +4065,7 @@ interface DetectedFolder {
   jobId?: string;
 }
 
-const AUDIO_EXTS = new Set(['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac', '.wma']);
+const AUDIO_EXTS = new Set(['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac', '.wma', '.mp4', '.webm']);
 const VOTING_EXTS = new Set(['.xlsx', '.csv', '.json', '.xls']);
 
 // Persist config to a JSON file so it survives restarts
