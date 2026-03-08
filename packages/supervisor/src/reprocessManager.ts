@@ -58,6 +58,13 @@ function hasLocalAudio(jobId: string, dir: 'raw' | 'processed'): boolean {
   return files.some(f => AUDIO_EXTS.has(path.extname(f).toLowerCase()));
 }
 
+function hasLocalFiles(jobId: string, stage: string): string[] {
+  const dirPath = path.join(getProjectRoot(), 'data', 'jobs', jobId, stage);
+  if (!existsSync(dirPath)) return [];
+  const files = readdirSync(dirPath).filter(f => !f.startsWith('.'));
+  return files;
+}
+
 async function downloadS3Prerequisites(
   jobId: string,
   stages: string[],
@@ -66,10 +73,18 @@ async function downloadS3Prerequisites(
   const jobDir = path.join(getProjectRoot(), 'data', 'jobs', jobId);
 
   for (const stage of stages) {
+    // Check local disk first — files may already exist from a previous pipeline run
+    const localFiles = hasLocalFiles(jobId, stage);
+    if (localFiles.length > 0) {
+      logger.info(`Job ${jobId}: ${stage} has ${localFiles.length} local files, skipping S3 download`);
+      downloaded[stage] = localFiles;
+      continue;
+    }
+
     const localDir = path.join(jobDir, stage);
     const files = await downloadJobStage(jobId, stage, localDir);
     if (files.length === 0) {
-      throw new Error(`Cannot reprocess: ${stage} files not found in S3`);
+      throw new Error(`Cannot reprocess: ${stage} files not found locally or in S3`);
     }
     downloaded[stage] = files;
   }

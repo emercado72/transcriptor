@@ -280,7 +280,7 @@ Now produce the unified speaker mapping JSON.`;
   const response = await client.chat.completions.create({
     model,
     max_tokens: 4096,
-    temperature: 0.1,
+    temperature: 0,
     messages: [
       { role: 'system', content: redisContext ? HYBRID_SYSTEM_PROMPT : RECONCILIATION_SYSTEM_PROMPT },
       { role: 'user', content: userPrompt },

@@ -127,6 +127,7 @@ export async function redactSection(
     const response = await client.chat.completions.create({
       model,
       max_tokens: 16_384,
+      temperature: 0,
       messages: [
         { role: 'user', content: prompt },
       ],
