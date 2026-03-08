@@ -45,10 +45,22 @@ export async function preprocessAudio(inputPath: string, outputPath: string): Pr
   return info;
 }
 
+const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mkv', '.avi', '.mov']);
+
 export function convertToMono(inputPath: string, outputPath: string): Promise<void> {
-  logger.info(`Converting to mono: ${inputPath}`);
+  const ext = path.extname(inputPath).toLowerCase();
+  const isVideo = VIDEO_EXTS.has(ext);
+  logger.info(`Converting to mono: ${inputPath}${isVideo ? ' (video container — extracting audio only)' : ''}`);
+
   return new Promise((resolve, reject) => {
-    ffmpeg(inputPath)
+    let cmd = ffmpeg(inputPath);
+
+    // For video files: skip video decoding entirely — we only need the audio stream
+    if (isVideo) {
+      cmd = cmd.noVideo();
+    }
+
+    cmd
       .audioChannels(1)
       .audioFrequency(16000)
       .output(outputPath)
