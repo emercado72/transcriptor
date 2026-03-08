@@ -319,7 +319,7 @@ export function startServer(port?: number): void {
       // Step 1: Scan the specific subfolder directly (not the parent)
       // This avoids the race condition where scanDriveFolder hasn't populated
       // detectedFolders yet when enqueueDetectedFolder is called.
-      const audioExts = new Set(['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac', '.wma']);
+      const audioExts = new Set(['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac', '.wma', '.mp4', '.webm']);
       const votingExts = new Set(['.xlsx', '.csv', '.json', '.xls']);
 
       const contents = await gwDriveListFiles(subfolderId, 100);
