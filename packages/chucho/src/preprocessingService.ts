@@ -186,7 +186,7 @@ async function processOneFile(
   return { outputFiles: [processedPath], duration: info.duration };
 }
 
-const AUDIO_EXTS = new Set(['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac', '.wma', '.webm']);
+const AUDIO_EXTS = new Set(['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac', '.wma', '.mp4', '.webm']);
 
 function isAudioFile(filename: string): boolean {
   const ext = path.extname(filename).toLowerCase();
