@@ -216,13 +216,20 @@ export async function processJob(jobId: string): Promise<LinaResult> {
 
   logger.info(`Redaction complete: ${redactedSections.length} sections, ${allErrors.length} errors, ${allWarnings.length} warnings`);
 
-  // Upload complete redacted output to S3
+  // Upload complete redacted output to S3 — critical for reprocessing from assembling stage
   try {
     const { uploadJobStage } = await import('@transcriptor/shared');
     await uploadJobStage(jobId, 'redacted', redactedDir);
     logger.info(`Uploaded redacted sections to S3 for job ${jobId}`);
   } catch (e) {
-    logger.error(`S3 upload failed for redacted: ${(e as Error).message}`);
+    logger.warn(`S3 upload failed for redacted (will retry once): ${(e as Error).message}`);
+    try {
+      const { uploadJobStage } = await import('@transcriptor/shared');
+      await uploadJobStage(jobId, 'redacted', redactedDir);
+      logger.info(`Uploaded redacted sections to S3 for job ${jobId} (retry succeeded)`);
+    } catch (e2) {
+      logger.error(`S3 upload FAILED for redacted after retry: ${(e2 as Error).message}. Redacted sections only exist on local disk!`);
+    }
   }
 
   markLinaRedactionComplete(jobId, {

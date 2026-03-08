@@ -199,13 +199,20 @@ export async function processJob(
   await fs.writeFile(transcriptPath, JSON.stringify(mergedTranscript, null, 2), 'utf-8');
   logger.info(`Raw transcript saved: ${transcriptPath}`);
 
-  // Upload transcript to S3
+  // Upload transcript to S3 — critical for reprocessing without re-transcribing
   try {
     const { uploadJobStage } = await import('@transcriptor/shared');
     await uploadJobStage(jobId, 'transcript', transcriptDir);
     logger.info(`Uploaded transcript to S3 for job ${jobId}`);
   } catch (e) {
-    logger.error(`S3 upload failed for transcript: ${(e as Error).message}`);
+    logger.warn(`S3 upload failed for transcript (will retry once): ${(e as Error).message}`);
+    try {
+      const { uploadJobStage } = await import('@transcriptor/shared');
+      await uploadJobStage(jobId, 'transcript', transcriptDir);
+      logger.info(`Uploaded transcript to S3 for job ${jobId} (retry succeeded)`);
+    } catch (e2) {
+      logger.error(`S3 upload FAILED for transcript after retry: ${(e2 as Error).message}. Transcript only exists on local disk!`);
+    }
   }
 
   // 4. Run QA
@@ -231,13 +238,20 @@ export async function processJob(
   }
   logger.info(`Wrote ${sections.length} section files to ${sectionsDir}`);
 
-  // Upload sections to S3
+  // Upload sections to S3 — critical for reprocessing from redacting stage
   try {
     const { uploadJobStage } = await import('@transcriptor/shared');
     await uploadJobStage(jobId, 'sections', sectionsDir);
     logger.info(`Uploaded sections to S3 for job ${jobId}`);
   } catch (e) {
-    logger.error(`S3 upload failed for sections: ${(e as Error).message}`);
+    logger.warn(`S3 upload failed for sections (will retry once): ${(e as Error).message}`);
+    try {
+      const { uploadJobStage } = await import('@transcriptor/shared');
+      await uploadJobStage(jobId, 'sections', sectionsDir);
+      logger.info(`Uploaded sections to S3 for job ${jobId} (retry succeeded)`);
+    } catch (e2) {
+      logger.error(`S3 upload FAILED for sections after retry: ${(e2 as Error).message}. Sections only exist on local disk!`);
+    }
   }
 
   // 8. Write QA report

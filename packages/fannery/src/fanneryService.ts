@@ -193,7 +193,14 @@ export async function processJob(jobId: string): Promise<FanneryResult> {
     await uploadJobStage(jobId, 'output', outputDir);
     logger.info(`Uploaded assembly output to S3 for job ${jobId}`);
   } catch (e) {
-    logger.error(`S3 upload failed for output: ${(e as Error).message}`);
+    logger.warn(`S3 upload failed for output (will retry once): ${(e as Error).message}`);
+    try {
+      const { uploadJobStage } = await import('@transcriptor/shared');
+      await uploadJobStage(jobId, 'output', outputDir);
+      logger.info(`Uploaded assembly output to S3 for job ${jobId} (retry succeeded)`);
+    } catch (e2) {
+      logger.error(`S3 upload FAILED for output after retry: ${(e2 as Error).message}. Output only exists on local disk!`);
+    }
   }
 
   // ──────────────────────────────────────────────
