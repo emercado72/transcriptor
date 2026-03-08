@@ -4408,8 +4408,14 @@ function getAllChuchoProgress(): (ChuchoJobProgress & { elapsedMs: number })[] {
 
 /**
  * Enqueue a detected folder for processing.
- * Yulieth downloads audio files, creates the pipeline, then publishes
- * a `files_ready` event for Supervisor to orchestrate the rest.
+ *
+ * LOCAL mode (shouldDelegate=true):
+ *   Yulieth creates the job and delegates immediately to a GPU worker via Fisher.
+ *   No files are downloaded locally — the GPU worker downloads from Drive.
+ *
+ * GPU-WORKER mode (shouldDelegate=false):
+ *   Yulieth downloads audio files from Drive, then publishes a `files_ready`
+ *   event for Supervisor to orchestrate the rest of the pipeline locally.
  */
 async function enqueueDetectedFolder(folderId: string): Promise<{ success: boolean; jobId?: string }> {
   const folder = detectedFolders.get(folderId);
@@ -4455,7 +4461,28 @@ async function enqueueDetectedFolder(folderId: string): Promise<{ success: boole
   logger.info(`Enqueued folder: ${folder.folderName} → pipeline ${jobId}`);
   void persistDetectedFolders();
 
-  // 2. Download audio files from Drive to data/jobs/<jobId>/raw/ (async, non-blocking)
+  // 3. Delegation check — in local mode, delegate to GPU worker without downloading
+  if (supervisor.shouldDelegate()) {
+    logger.info(`Yulieth: delegation enabled — delegating job ${jobId} to GPU worker (no local download)`);
+    try {
+      const driveFolderId = yuliethConfig.driveFolderId;
+      if (!driveFolderId) {
+        throw new Error('Cannot delegate: no driveFolderId in Yulieth config');
+      }
+      await supervisor.delegateJob(jobId, driveFolderId);
+      folder.status = 'processing';
+      void persistDetectedFolders();
+      logger.info(`Yulieth: job ${jobId} delegated to GPU worker successfully`);
+    } catch (delErr) {
+      const msg = delErr instanceof Error ? delErr.message : String(delErr);
+      folder.status = 'error';
+      void persistDetectedFolders();
+      logger.error(`Yulieth: delegation failed for job ${jobId}: ${msg}`);
+    }
+    return { success: true, jobId };
+  }
+
+  // 4. GPU-worker mode — download audio files from Drive to data/jobs/<jobId>/raw/
   initChuchoProgress(jobId, folder.audioFiles.length);
 
   void (async () => {
@@ -4481,7 +4508,7 @@ async function enqueueDetectedFolder(folderId: string): Promise<{ success: boole
 
       logger.info(`Yulieth: downloads complete for job ${jobId} — notifying Supervisor`);
 
-      // 3. Notify Supervisor: files are ready for preprocessing
+      // 5. Notify Supervisor: files are ready for preprocessing
       await publishSuccess('files_ready', jobId, 'yulieth', {
         folderId,
         driveFolderId: yuliethConfig.driveFolderId,
