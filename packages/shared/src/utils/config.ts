@@ -23,7 +23,7 @@ export function getEnvConfig(): EnvConfig {
     groqModel: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
     openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
     openrouterModel: process.env.OPENROUTER_MODEL || 'anthropic/claude-sonnet-4.6',
-    linaModel: process.env.LINA_MODEL || 'qwen/qwen3.5-plus-02-15',
+    linaModel: process.env.LINA_MODEL || 'google/gemini-3-flash-preview',
     gloriaModel: process.env.GLORIA_MODEL || '',
     elevenLabsApiKey: process.env.ELEVENLABS_API_KEY || '',
     googleClientId: process.env.GOOGLE_CLIENT_ID || '',
