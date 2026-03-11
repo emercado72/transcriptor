@@ -31,6 +31,8 @@ interface DelegationPayload {
   eventId: string;
   /** When set, GPU worker reprocesses from this stage instead of running the full pipeline */
   fromStage?: string;
+  /** File IDs selected by user on the local machine; GPU worker must respect this selection */
+  selectedAudioFileIds?: string[];
 }
 
 // ── Core delegation ──
@@ -44,7 +46,7 @@ interface DelegationPayload {
  * 4. POST to remote /api/pipeline/delegate
  * 5. Mark job as DELEGATED + start polling
  */
-export async function delegateJob(jobId: string, driveFolderId: string, fromStage?: string): Promise<void> {
+export async function delegateJob(jobId: string, driveFolderId: string, fromStage?: string, selectedAudioFileIds?: string[]): Promise<void> {
   const job = await stateManager.loadState(jobId);
   const subfolderId = job.eventId;
 
@@ -106,6 +108,7 @@ export async function delegateJob(jobId: string, driveFolderId: string, fromStag
       clientName: job.clientName,
       eventId: job.eventId,
       ...(fromStage && { fromStage }),
+      ...(selectedAudioFileIds && { selectedAudioFileIds }),
     };
 
     const res = await fetch(`http://${workerIp}:3001/api/pipeline/delegate`, {

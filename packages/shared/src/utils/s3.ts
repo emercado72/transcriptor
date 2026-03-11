@@ -198,3 +198,83 @@ export async function jobStageExists(
   const files = await listJobFiles(jobId, stage);
   return files.length > 0;
 }
+
+// ── Config file operations (non-job-scoped) ──────────────────
+
+function configKey(subpath: string): string {
+  const cfg = getEnvConfig();
+  return `${cfg.s3Prefix}/config/${subpath}`;
+}
+
+/**
+ * Upload a config/prompt file to S3 under config/<subpath>.
+ * Used to sync agent-prompts.json and superPrompt.md to GPU workers.
+ */
+export async function putConfigFile(subpath: string, content: string | Buffer): Promise<void> {
+  const client = getClient();
+  const cfg = getEnvConfig();
+  const key = configKey(subpath);
+
+  await client.send(new PutObjectCommand({
+    Bucket: cfg.s3Bucket,
+    Key: key,
+    Body: typeof content === 'string' ? Buffer.from(content, 'utf-8') : content,
+    ContentType: getMimeType(subpath),
+  }));
+
+  logger.info(`Config file uploaded to S3: ${key}`);
+}
+
+/**
+ * Download a config/prompt file from S3.
+ * Returns null if the file doesn't exist.
+ */
+export async function getConfigFile(subpath: string): Promise<Buffer | null> {
+  try {
+    const client = getClient();
+    const cfg = getEnvConfig();
+    const key = configKey(subpath);
+
+    const response = await client.send(new GetObjectCommand({
+      Bucket: cfg.s3Bucket,
+      Key: key,
+    }));
+
+    if (!response.Body) return null;
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of response.Body as AsyncIterable<Uint8Array>) {
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+  } catch (err: any) {
+    if (err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Get metadata (LastModified) for a config file in S3.
+ * Returns null if the file doesn't exist.
+ * Used for freshness checks — compare with local file mtime.
+ */
+export async function getConfigFileMeta(subpath: string): Promise<{ lastModified: Date } | null> {
+  try {
+    const client = getClient();
+    const cfg = getEnvConfig();
+    const key = configKey(subpath);
+
+    const response = await client.send(new HeadObjectCommand({
+      Bucket: cfg.s3Bucket,
+      Key: key,
+    }));
+
+    return response.LastModified ? { lastModified: response.LastModified } : null;
+  } catch (err: any) {
+    if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) {
+      return null;
+    }
+    throw err;
+  }
+}

@@ -41,6 +41,9 @@ export {
   downloadJobStage,
   listJobFiles,
   jobStageExists,
+  putConfigFile,
+  getConfigFile,
+  getConfigFileMeta,
 } from './s3.js';
 export {
   publishEvent,

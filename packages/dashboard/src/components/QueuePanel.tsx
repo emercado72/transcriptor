@@ -11,7 +11,7 @@ interface Props {
 interface DriveEventFolder {
   folderId: string;
   folderName: string;
-  audioFiles: { id: string; name: string; size: number }[];
+  audioFiles: { id: string; name: string; size: number; selected: boolean }[];
   votingFiles: { id: string; name: string; size: number }[];
   status: 'detected' | 'queued' | 'processing' | 'completed' | 'error';
   jobId?: string;
@@ -79,6 +79,49 @@ export default function QueuePanel({ node, onClose, onSwitchToChat, onSwitchToCo
       setError(err instanceof Error ? err.message : 'Reset failed');
     }
   }, [fetchQueue]);
+
+  const handleToggleFile = useCallback(async (folderId: string, fileId: string, selected: boolean) => {
+    // Optimistic update
+    setFolders(prev => prev.map(f => {
+      if (f.folderId !== folderId) return f;
+      return { ...f, audioFiles: f.audioFiles.map(af => af.id === fileId ? { ...af, selected } : af) };
+    }));
+    try {
+      const res = await fetch('/api/agents/yulieth/selection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folderId, fileSelections: [{ fileId, selected }] }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Selection failed');
+      await fetchQueue(); // Revert on failure
+    }
+  }, [fetchQueue]);
+
+  const handleToggleAll = useCallback(async (folderId: string, selectAll: boolean) => {
+    const folder = folders.find(f => f.folderId === folderId);
+    if (!folder) return;
+    // Optimistic update
+    setFolders(prev => prev.map(f => {
+      if (f.folderId !== folderId) return f;
+      return { ...f, audioFiles: f.audioFiles.map(af => ({ ...af, selected: selectAll })) };
+    }));
+    try {
+      const res = await fetch('/api/agents/yulieth/selection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          folderId,
+          fileSelections: folder.audioFiles.map(f => ({ fileId: f.id, selected: selectAll })),
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Selection failed');
+      await fetchQueue();
+    }
+  }, [folders, fetchQueue]);
 
   const statusColor = (s: string) => {
     switch (s) {
@@ -228,7 +271,7 @@ export default function QueuePanel({ node, onClose, onSwitchToChat, onSwitchToCo
                     {folder.folderName}
                   </div>
                   <div style={{ color: '#64748b', fontSize: '11px', marginTop: '2px' }}>
-                    {folder.audioFiles.length} audio · {folder.votingFiles.length} voting · {totalFiles} total
+                    {folder.audioFiles.filter(f => f.selected).length}/{folder.audioFiles.length} audio · {folder.votingFiles.length} voting
                   </div>
                 </div>
                 <span style={{
@@ -250,11 +293,32 @@ export default function QueuePanel({ node, onClose, onSwitchToChat, onSwitchToCo
                 <div style={{ padding: '0 14px 12px', borderTop: '1px solid #1e293b' }}>
                   {folder.audioFiles.length > 0 && (
                     <div style={{ marginTop: '8px' }}>
-                      <div style={{ color: '#94a3b8', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', marginBottom: '4px' }}>
-                        🎵 Audio Files
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                        <div style={{ color: '#94a3b8', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase' }}>
+                          🎵 Audio Files ({folder.audioFiles.filter(f => f.selected).length}/{folder.audioFiles.length})
+                        </div>
+                        {folder.status === 'detected' && folder.audioFiles.length > 1 && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const allSelected = folder.audioFiles.every(f => f.selected);
+                              handleToggleAll(folder.folderId, !allSelected);
+                            }}
+                            style={{ background: 'none', border: 'none', color: '#7c3aed', fontSize: '10px', cursor: 'pointer', padding: '0 4px' }}
+                          >
+                            {folder.audioFiles.every(f => f.selected) ? 'Deselect All' : 'Select All'}
+                          </button>
+                        )}
                       </div>
                       {folder.audioFiles.map((f) => (
-                        <FileRow key={f.id} name={f.name} size={f.size} />
+                        <FileRow
+                          key={f.id}
+                          name={f.name}
+                          size={f.size}
+                          selected={f.selected}
+                          canSelect={folder.status === 'detected'}
+                          onToggle={() => handleToggleFile(folder.folderId, f.id, !f.selected)}
+                        />
                       ))}
                     </div>
                   )}
@@ -270,25 +334,30 @@ export default function QueuePanel({ node, onClose, onSwitchToChat, onSwitchToCo
                   )}
 
                   {/* Action buttons */}
-                  {folder.status === 'detected' && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleEnqueue(folder.folderId); }}
-                      style={{
-                        marginTop: '10px',
-                        width: '100%',
-                        background: '#7c3aed',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: '6px',
-                        padding: '8px',
-                        fontSize: '12px',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      📋 Queue for Processing
-                    </button>
-                  )}
+                  {folder.status === 'detected' && (() => {
+                    const selectedCount = folder.audioFiles.filter(f => f.selected).length;
+                    const canEnqueue = selectedCount > 0;
+                    return (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); if (canEnqueue) handleEnqueue(folder.folderId); }}
+                        disabled={!canEnqueue}
+                        style={{
+                          marginTop: '10px',
+                          width: '100%',
+                          background: canEnqueue ? '#7c3aed' : '#334155',
+                          color: canEnqueue ? '#fff' : '#64748b',
+                          border: 'none',
+                          borderRadius: '6px',
+                          padding: '8px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: canEnqueue ? 'pointer' : 'not-allowed',
+                        }}
+                      >
+                        📋 Queue for Processing ({selectedCount} file{selectedCount !== 1 ? 's' : ''})
+                      </button>
+                    );
+                  })()}
                   {folder.status !== 'detected' && (
                     <button
                       onClick={(e) => { e.stopPropagation(); handleReset(folder.folderId); }}
@@ -347,7 +416,13 @@ export default function QueuePanel({ node, onClose, onSwitchToChat, onSwitchToCo
   );
 }
 
-function FileRow({ name, size }: { name: string; size: number }) {
+function FileRow({ name, size, selected, canSelect, onToggle }: {
+  name: string;
+  size: number;
+  selected?: boolean;
+  canSelect?: boolean;
+  onToggle?: () => void;
+}) {
   const sizeStr = size > 1_048_576
     ? `${(size / 1_048_576).toFixed(1)} MB`
     : size > 1024
@@ -362,10 +437,27 @@ function FileRow({ name, size }: { name: string; size: number }) {
       padding: '4px 8px',
       borderRadius: '4px',
       fontSize: '12px',
+      opacity: selected === false ? 0.45 : 1,
     }}>
-      <span style={{ color: '#cbd5e1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '260px' }}>
-        {name}
-      </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1 }}>
+        {canSelect && (
+          <input
+            type="checkbox"
+            checked={selected ?? true}
+            onChange={(e) => { e.stopPropagation(); onToggle?.(); }}
+            style={{ accentColor: '#7c3aed', cursor: 'pointer', flexShrink: 0 }}
+          />
+        )}
+        <span style={{
+          color: '#cbd5e1',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          textDecoration: selected === false ? 'line-through' : 'none',
+        }}>
+          {name}
+        </span>
+      </div>
       <span style={{ color: '#64748b', fontSize: '11px', flexShrink: 0, marginLeft: '8px' }}>
         {sizeStr}
       </span>

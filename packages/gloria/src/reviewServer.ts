@@ -185,6 +185,11 @@ export function startServer(port?: number): void {
   // Update Yulieth config
   app.put('/api/agents/yulieth/config', (req, res) => {
     const body = req.body;
+    const prevPollInterval = yuliethConfig.pollIntervalSeconds;
+    const prevDriveFolderId = yuliethConfig.driveFolderId;
+    const prevAudioExts = JSON.stringify(yuliethConfig.audioExtensions);
+    const prevVotingExts = JSON.stringify(yuliethConfig.votingExtensions);
+
     if (body.driveFolderId !== undefined) yuliethConfig.driveFolderId = String(body.driveFolderId);
     if (body.pollIntervalSeconds !== undefined) yuliethConfig.pollIntervalSeconds = Math.max(30, Number(body.pollIntervalSeconds) || 60);
     if (body.autoQueue !== undefined) yuliethConfig.autoQueue = Boolean(body.autoQueue);
@@ -192,6 +197,38 @@ export function startServer(port?: number): void {
     if (body.votingExtensions !== undefined) yuliethConfig.votingExtensions = body.votingExtensions;
     saveYuliethConfig();
     logger.info('Yulieth config updated', yuliethConfig);
+
+    // Invalidate detected-folders cache when filter extensions change so the
+    // next scan re-evaluates file lists with the new filters.
+    const extsChanged =
+      JSON.stringify(yuliethConfig.audioExtensions) !== prevAudioExts ||
+      JSON.stringify(yuliethConfig.votingExtensions) !== prevVotingExts;
+    if (extsChanged) {
+      let cleared = 0;
+      for (const [key, folder] of detectedFolders) {
+        if (folder.status === 'detected') {
+          detectedFolders.delete(key);
+          cleared++;
+        }
+      }
+      if (cleared > 0) {
+        logger.info(`Cleared ${cleared} detected folder(s) — extension filters changed, will re-scan`);
+        void persistDetectedFolders();
+      }
+    }
+
+    // Restart the watcher when poll interval or drive folder changes so the
+    // new values take effect immediately (setInterval captures the old value).
+    const watcherNeedsRestart =
+      yuliethConfig.isWatching &&
+      (yuliethConfig.pollIntervalSeconds !== prevPollInterval ||
+       yuliethConfig.driveFolderId !== prevDriveFolderId ||
+       extsChanged);
+    if (watcherNeedsRestart) {
+      logger.info('Config change affects running watcher — restarting');
+      startYuliethWatcher();
+    }
+
     res.json({ config: yuliethConfig });
   });
 
@@ -253,6 +290,35 @@ export function startServer(port?: number): void {
     }
   });
 
+  // Update file selection for a detected folder
+  app.post('/api/agents/yulieth/selection', async (req, res) => {
+    try {
+      const { folderId, fileSelections } = req.body as {
+        folderId: string;
+        fileSelections: { fileId: string; selected: boolean }[];
+      };
+      if (!folderId || !Array.isArray(fileSelections)) {
+        return res.status(400).json({ error: 'folderId and fileSelections[] required' });
+      }
+      const folder = detectedFolders.get(folderId);
+      if (!folder) {
+        return res.status(404).json({ error: 'Folder not found' });
+      }
+      if (folder.status !== 'detected') {
+        return res.status(400).json({ error: 'Cannot change selection: folder is already ' + folder.status });
+      }
+      for (const { fileId, selected } of fileSelections) {
+        const audioFile = folder.audioFiles.find(f => f.id === fileId);
+        if (audioFile) audioFile.selected = selected;
+      }
+      void persistDetectedFolders();
+      res.json({ ok: true, audioFiles: folder.audioFiles });
+    } catch (err) {
+      logger.error('Selection update error', err as Error);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // Reset stuck Yulieth folders back to "detected" so they can be re-queued
   app.post('/api/agents/yulieth/reset', async (req, res) => {
     try {
@@ -278,7 +344,10 @@ export function startServer(port?: number): void {
   // ── Delegation endpoint: receive a delegated job from a remote Supervisor ──
   app.post('/api/pipeline/delegate', async (req, res) => {
     try {
-      const { driveFolderId, subfolderId, localJobId, idAsamblea, clientName, eventId, fromStage } = req.body;
+      // Refresh prompts from S3 before processing (ensures GPU worker has latest)
+      await refreshPromptsFromS3();
+
+      const { driveFolderId, subfolderId, localJobId, idAsamblea, clientName, eventId, fromStage, selectedAudioFileIds } = req.body;
       if (!driveFolderId || !subfolderId) {
         return res.status(400).json({ error: 'driveFolderId and subfolderId required' });
       }
@@ -359,11 +428,16 @@ export function startServer(port?: number): void {
         logger.warn(`Could not fetch Drive folder name, falling back to: "${folderName}"`);
       }
 
+      // Apply file selection from the delegating machine, or auto-select if not provided
+      const audioFilesWithSelection: DetectedFolder['audioFiles'] = Array.isArray(selectedAudioFileIds)
+        ? audioFiles.map((f: any) => ({ ...f, selected: selectedAudioFileIds.includes(f.id) }))
+        : applyAutoSelection(audioFiles);
+
       // Register in detectedFolders map so enqueueDetectedFolder can find it
       const folder: DetectedFolder = {
         folderId: subfolderId,
         folderName,
-        audioFiles,
+        audioFiles: audioFilesWithSelection,
         votingFiles,
         status: 'detected',
         detectedAt: new Date().toISOString(),
@@ -1268,28 +1342,42 @@ export function startServer(port?: number): void {
   }
 
   async function syncPromptsToS3(): Promise<void> {
+    // Sync agent-prompts.json via SDK
     try {
-      const { execSync } = await import('child_process');
-      execSync(
-        `s3cmd put ${PROMPTS_FILE} s3://t2025-registry/transcriptor/agent-prompts.json --force 2>/dev/null`,
-        { encoding: 'utf-8', timeout: 15_000 },
-      );
-      logger.info('Prompts synced to S3');
+      const { putConfigFile } = await import('@transcriptor/shared');
+      const content = JSON.stringify(AGENT_SYSTEM_PROMPTS, null, 2);
+      await putConfigFile('agent-prompts.json', content);
+      logger.info('Agent prompts synced to S3 (SDK)');
     } catch (err) {
-      logger.warn('S3 sync failed (s3cmd not configured or unavailable): ' + (err as Error).message);
+      logger.warn('S3 prompt sync failed: ' + (err as Error).message);
+    }
+
+    // Also sync superPrompt.md if it exists on disk
+    try {
+      const superPromptPath = path.resolve(import.meta.dirname, '../../../../docs/prompts/superPrompt.md');
+      if (fs.existsSync(superPromptPath)) {
+        const { putConfigFile } = await import('@transcriptor/shared');
+        const content = fs.readFileSync(superPromptPath, 'utf-8');
+        await putConfigFile('superPrompt.md', content);
+        logger.info('Super prompt synced to S3');
+      }
+    } catch (err) {
+      logger.warn('S3 super prompt sync failed: ' + (err as Error).message);
     }
   }
 
   async function loadPromptsFromS3(): Promise<void> {
     try {
       if (fs.existsSync(PROMPTS_FILE)) return; // local file takes priority
-      const { execSync } = await import('child_process');
-      execSync(
-        `s3cmd get s3://t2025-registry/transcriptor/agent-prompts.json ${PROMPTS_FILE} --force 2>/dev/null`,
-        { encoding: 'utf-8', timeout: 15_000 },
-      );
-      logger.info('Prompts downloaded from S3');
-      loadPromptsFromDisk();
+      const { getConfigFile } = await import('@transcriptor/shared');
+      const buf = await getConfigFile('agent-prompts.json');
+      if (buf) {
+        const dir = path.dirname(PROMPTS_FILE);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(PROMPTS_FILE, buf);
+        logger.info('Prompts downloaded from S3 (SDK)');
+        loadPromptsFromDisk();
+      }
     } catch {
       // S3 not available or no saved prompts — use defaults
     }
@@ -1329,6 +1417,102 @@ export function startServer(port?: number): void {
     }
     res.json(prompts);
   });
+
+  // -- Super Prompt (Lina's redaction instructions) --
+
+  const SUPER_PROMPT_PATH = path.resolve(import.meta.dirname, '../../../../docs/prompts/superPrompt.md');
+
+  app.get('/api/prompts/super', (_req, res) => {
+    try {
+      if (fs.existsSync(SUPER_PROMPT_PATH)) {
+        const content = fs.readFileSync(SUPER_PROMPT_PATH, 'utf-8');
+        res.json({ content, length: content.length });
+      } else {
+        res.status(404).json({ error: 'superPrompt.md not found on disk' });
+      }
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.put('/api/prompts/super', async (req, res) => {
+    const { content } = req.body;
+    if (!content || typeof content !== 'string') {
+      return res.status(400).json({ error: 'content (string) required in body' });
+    }
+    try {
+      const dir = path.dirname(SUPER_PROMPT_PATH);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(SUPER_PROMPT_PATH, content, 'utf-8');
+      logger.info('Super prompt saved (' + content.length + ' chars)');
+      res.json({ updated: true, length: content.length });
+      // Sync to S3 in background
+      try {
+        const { putConfigFile } = await import('@transcriptor/shared');
+        await putConfigFile('superPrompt.md', content);
+        logger.info('Super prompt synced to S3');
+      } catch (err) {
+        logger.warn('S3 super prompt sync failed: ' + (err as Error).message);
+      }
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // -- Prompt Freshness Check (GPU workers call before processing) --
+
+  /**
+   * Refresh prompts from S3 if a newer version exists.
+   * Called by GPU workers before processing a delegated job to ensure
+   * they have the latest prompts from the local machine.
+   */
+  async function refreshPromptsFromS3(): Promise<void> {
+    const { getConfigFile, getConfigFileMeta } = await import('@transcriptor/shared');
+
+    // 1. Check agent-prompts.json
+    try {
+      const localMtime = fs.existsSync(PROMPTS_FILE)
+        ? fs.statSync(PROMPTS_FILE).mtime
+        : new Date(0);
+      const meta = await getConfigFileMeta('agent-prompts.json');
+      if (meta && meta.lastModified > localMtime) {
+        const buf = await getConfigFile('agent-prompts.json');
+        if (buf) {
+          const dir = path.dirname(PROMPTS_FILE);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(PROMPTS_FILE, buf);
+          loadPromptsFromDisk(); // reload into memory
+          logger.info('Refreshed agent-prompts.json from S3 (newer version found)');
+        }
+      } else {
+        logger.debug?.('agent-prompts.json is up-to-date with S3');
+      }
+    } catch (err) {
+      logger.warn('Failed to refresh agent prompts from S3: ' + (err as Error).message);
+    }
+
+    // 2. Check superPrompt.md
+    try {
+      const localMtime = fs.existsSync(SUPER_PROMPT_PATH)
+        ? fs.statSync(SUPER_PROMPT_PATH).mtime
+        : new Date(0);
+      const meta = await getConfigFileMeta('superPrompt.md');
+      if (meta && meta.lastModified > localMtime) {
+        const buf = await getConfigFile('superPrompt.md');
+        if (buf) {
+          const dir = path.dirname(SUPER_PROMPT_PATH);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(SUPER_PROMPT_PATH, buf);
+          logger.info('Refreshed superPrompt.md from S3 (newer version found)');
+          // No in-memory reload needed — Lina reads from disk per-call via loadSuperPrompt()
+        }
+      } else {
+        logger.debug?.('superPrompt.md is up-to-date with S3');
+      }
+    } catch (err) {
+      logger.warn('Failed to refresh super prompt from S3: ' + (err as Error).message);
+    }
+  }
 
   // -- Processing Prompts (the prompts agents send to Claude for actual work) --
   const PROCESSING_PROMPTS_FILE = path.resolve(import.meta.dirname, '../../../config/processing-prompts.json');
@@ -4058,11 +4242,28 @@ interface YuliethConfigState {
 interface DetectedFolder {
   folderId: string;
   folderName: string;
-  audioFiles: { id: string; name: string; size: number }[];
+  audioFiles: { id: string; name: string; size: number; selected: boolean }[];
   votingFiles: { id: string; name: string; size: number }[];
   status: 'detected' | 'queued' | 'processing' | 'completed' | 'error';
   detectedAt: string;
   jobId?: string;
+}
+
+/**
+ * Smart auto-selection: prefer .mp3 only; fall back to .mp4 only; else select all.
+ */
+function applyAutoSelection(
+  files: { id: string; name: string; size: number }[],
+): { id: string; name: string; size: number; selected: boolean }[] {
+  const hasExt = (ext: string) => files.some(f => f.name.toLowerCase().endsWith(ext));
+
+  if (hasExt('.mp3')) {
+    return files.map(f => ({ ...f, selected: f.name.toLowerCase().endsWith('.mp3') }));
+  }
+  if (hasExt('.mp4')) {
+    return files.map(f => ({ ...f, selected: f.name.toLowerCase().endsWith('.mp4') }));
+  }
+  return files.map(f => ({ ...f, selected: true }));
 }
 
 const AUDIO_EXTS = new Set(['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac', '.wma', '.mp4', '.webm']);
@@ -4130,6 +4331,8 @@ async function restoreDetectedFolders(): Promise<void> {
     if (!raw) return;
     const data = JSON.parse(raw) as Record<string, DetectedFolder>;
     for (const [key, folder] of Object.entries(data)) {
+      // Migrate legacy entries that lack the `selected` field
+      folder.audioFiles = folder.audioFiles.map(f => ({ ...f, selected: (f as any).selected ?? true }));
       detectedFolders.set(key, folder);
     }
     logger.info(`Restored ${detectedFolders.size} detected folder(s) from Redis`);
@@ -4205,7 +4408,7 @@ async function scanDriveFolder(folderId: string): Promise<DetectedFolder[]> {
     const folder: DetectedFolder = {
       folderId: subfolder.id,
       folderName: subfolder.name,
-      audioFiles,
+      audioFiles: applyAutoSelection(audioFiles),
       votingFiles,
       status: 'detected',
       detectedAt: new Date().toISOString(),
@@ -4441,11 +4644,16 @@ async function enqueueDetectedFolder(folderId: string): Promise<{ success: boole
     logger.warn(`Folder "${folder.folderName}" has no numeric prefix — pipeline will proceed without idAsamblea`);
   }
 
-  // 2. Create pipeline job via Supervisor
+  // 2. Create pipeline job via Supervisor (only selected audio files)
+  const selectedAudio = folder.audioFiles.filter(f => f.selected);
+  if (selectedAudio.length === 0) {
+    throw new Error(`No audio files selected for folder "${folder.folderName}"`);
+  }
+
   const eventFolder: import('@transcriptor/shared').EventFolder = {
     folderId: folder.folderId,
     folderName: folder.folderName,
-    audioFiles: folder.audioFiles.map(f => f.name),
+    audioFiles: selectedAudio.map(f => f.name),
     votingFiles: folder.votingFiles.map(f => f.name),
     path: folder.folderId,
   };
@@ -4469,7 +4677,8 @@ async function enqueueDetectedFolder(folderId: string): Promise<{ success: boole
       if (!driveFolderId) {
         throw new Error('Cannot delegate: no driveFolderId in Yulieth config');
       }
-      await supervisor.delegateJob(jobId, driveFolderId);
+      const selectedIds = selectedAudio.map(f => f.id);
+      await supervisor.delegateJob(jobId, driveFolderId, undefined, selectedIds);
       folder.status = 'processing';
       void persistDetectedFolders();
       logger.info(`Yulieth: job ${jobId} delegated to GPU worker successfully`);
@@ -4482,8 +4691,8 @@ async function enqueueDetectedFolder(folderId: string): Promise<{ success: boole
     return { success: true, jobId };
   }
 
-  // 4. GPU-worker mode — download audio files from Drive to data/jobs/<jobId>/raw/
-  initChuchoProgress(jobId, folder.audioFiles.length);
+  // 4. GPU-worker mode — download selected audio files from Drive to data/jobs/<jobId>/raw/
+  initChuchoProgress(jobId, selectedAudio.length);
 
   void (async () => {
     try {
@@ -4491,9 +4700,9 @@ async function enqueueDetectedFolder(folderId: string): Promise<{ success: boole
       const rawDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../..', 'data', 'jobs', jobId, 'raw');
       await fs.promises.mkdir(rawDir, { recursive: true });
 
-      logger.info(`Yulieth: downloading ${folder.audioFiles.length} audio file(s) for job ${jobId}`);
-      for (let i = 0; i < folder.audioFiles.length; i++) {
-        const audioFile = folder.audioFiles[i];
+      logger.info(`Yulieth: downloading ${selectedAudio.length}/${folder.audioFiles.length} audio file(s) for job ${jobId}`);
+      for (let i = 0; i < selectedAudio.length; i++) {
+        const audioFile = selectedAudio[i];
         const destPath = path.join(rawDir, audioFile.name);
         updateChuchoProgress(jobId, { currentFile: audioFile.name });
         await gwDriveDownloadFile(audioFile.id, destPath);
