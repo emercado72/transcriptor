@@ -76,11 +76,7 @@ export function renderIntervention(block: InterventionBlock, _templateConfig: Te
         size: BODY_SIZE,
         font: FONT,
       }),
-      new TextRun({
-        text: block.text,
-        size: BODY_SIZE,
-        font: FONT,
-      }),
+      ...parseInlineBold(block.text, false),
     ],
     alignment: AlignmentType.JUSTIFIED,
     spacing: {
@@ -100,14 +96,7 @@ export function renderListItem(
   numberingRef: string | null,
 ): Paragraph {
   const paragraphOptions: Record<string, unknown> = {
-    children: [
-      new TextRun({
-        text: block.text,
-        bold: block.bold,
-        size: BODY_SIZE,
-        font: FONT,
-      }),
-    ],
+    children: parseInlineBold(block.text, block.bold),
     spacing: {
       after: AFTER_PARAGRAPH,
       line: LINE_SPACING,
