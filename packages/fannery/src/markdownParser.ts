@@ -221,8 +221,6 @@ function injectVotingBlocksOrdered(
 
   const questionMap = buildQuestionMap(votingData);
   const result: ContentBlock[] = [];
-  // Track which questions have already been injected to prevent duplicate markers
-  const injectedQuestionIds = new Set<string>();
 
   for (const block of rawBlocks) {
     // Check if this block IS a voting marker (Lina wrote it as a blockquote paragraph)
@@ -230,15 +228,14 @@ function injectVotingBlocksOrdered(
       const markerMatch = block.text.match(VOTING_MARKER_RE);
       if (markerMatch) {
         const questionId = markerMatch[1];
-        // Skip duplicate markers — only inject each question once
-        if (injectedQuestionIds.has(questionId)) {
-          logger.warn(`Duplicate marker for Q${questionId} — skipping`);
+        // Skip duplicate markers — only inject each question once (global across all sections)
+        if (matchedQuestionIds.has(questionId)) {
+          logger.warn(`Duplicate marker for Q${questionId} — skipping (already injected in earlier section)`);
           continue;
         }
         const question = questionMap.get(questionId);
         if (question && !isWarmupQuestion(question)) {
           matchedQuestionIds.add(questionId);
-          injectedQuestionIds.add(questionId);
           logger.info(`Marker found for Q${questionId}: replacing with voting blocks`);
           result.push({
             type: 'votingQuestion',
@@ -273,11 +270,10 @@ function injectVotingBlocksOrdered(
             result.push({ ...block, text: before });
           }
 
-          // Push voting blocks (skip if already injected)
+          // Push voting blocks (skip if already injected globally)
           const question = questionMap.get(questionId);
-          if (question && !isWarmupQuestion(question) && !injectedQuestionIds.has(questionId)) {
+          if (question && !isWarmupQuestion(question) && !matchedQuestionIds.has(questionId)) {
             matchedQuestionIds.add(questionId);
-            injectedQuestionIds.add(questionId);
             result.push({
               type: 'votingQuestion',
               questionId: question.questionId,
@@ -288,8 +284,8 @@ function injectVotingBlocksOrdered(
               questionId: question.questionId,
               source: 'robinson' as const,
             });
-          } else if (injectedQuestionIds.has(questionId)) {
-            logger.warn(`Duplicate inline marker for Q${questionId} — skipping`);
+          } else if (matchedQuestionIds.has(questionId)) {
+            logger.warn(`Duplicate inline marker for Q${questionId} — skipping (already injected)`);
           }
 
           remainingText = remainingText.slice(markerIdx + m[0].length).trim();
