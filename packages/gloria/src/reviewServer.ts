@@ -4331,8 +4331,12 @@ async function restoreDetectedFolders(): Promise<void> {
     if (!raw) return;
     const data = JSON.parse(raw) as Record<string, DetectedFolder>;
     for (const [key, folder] of Object.entries(data)) {
-      // Migrate legacy entries that lack the `selected` field
-      folder.audioFiles = folder.audioFiles.map(f => ({ ...f, selected: (f as any).selected ?? true }));
+      // Migrate legacy entries that lack the `selected` field — apply smart auto-selection
+      const needsMigration = folder.audioFiles.some(f => (f as any).selected === undefined);
+      if (needsMigration) {
+        const plain = folder.audioFiles.map(f => ({ id: f.id, name: f.name, size: f.size }));
+        folder.audioFiles = applyAutoSelection(plain);
+      }
       detectedFolders.set(key, folder);
     }
     logger.info(`Restored ${detectedFolders.size} detected folder(s) from Redis`);
