@@ -134,12 +134,16 @@ export function buildVotingQuestionsBlock(questionList: import('@transcriptor/sh
   if (!questionList || questionList.length === 0) return '';
 
   // Filter warmup questions (Q0 and icebreakers) — same logic as markdownParser
+  // Also filter invalidated questions with zero votes (e.g. replaced by a corrected question)
   const votable = questionList.filter((q) => {
     if (Number(q.questionId) === 0) return false;
     const t = q.questionText.toUpperCase();
     if (t.includes('AMANECIO') || t.includes('AMANECIÓ')) return false;
     if (/(?<![A-ZÁÉÍÓÚÑ])PRUEBA(?![A-ZÁÉÍÓÚÑ])/.test(t)) return false;
     if (/(?<![A-ZÁÉÍÓÚÑ])TEST(?![A-ZÁÉÍÓÚÑ])/.test(t)) return false;
+    // Skip invalidated/replaced questions — no one voted on them
+    const totalNominal = (q.options || []).reduce((sum, o) => sum + (o.nominal || 0), 0);
+    if (totalNominal === 0) return false;
     return true;
   });
 

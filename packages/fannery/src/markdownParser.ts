@@ -337,5 +337,9 @@ function isWarmupQuestion(summary: VotingSummary): boolean {
   // Exact standalone "TEST"
   if (/(?<![A-ZÁÉÍÓÚÑ])TEST(?![A-ZÁÉÍÓÚÑ])/.test(text)) return true;
 
+  // Invalidated/replaced questions with zero votes — admin annulled and re-asked
+  const totalNominal = (summary.options || []).reduce((sum, o) => sum + (o.nominal || 0), 0);
+  if (totalNominal === 0) return true;
+
   return false;
 }
