@@ -124,7 +124,40 @@ function parseMarkdownIntoRawBlocks(text: string): ContentBlock[] {
     if (isBoldHeading) {
       blocks.push({ type: 'paragraph', bold: true, text: trimmed.slice(2, -2) });
     } else {
-      blocks.push({ type: 'paragraph', bold: false, text: paragraphText });
+      // Detect inline numbered lists: "preamble: 1. item; 2. item; 3. item..."
+      // Pattern: text ending with colon, followed by "1." and at least 3 numbered items
+      const inlineListMatch = paragraphText.match(
+        /^([\s\S]*?[.:]\s*)(\d+\.\s+.+;\s*\d+\.\s+.+;\s*\d+\.\s+.+)/,
+      );
+      if (inlineListMatch) {
+        const preamble = inlineListMatch[1].trim();
+        const listPart = inlineListMatch[2];
+        // Split on "; N." pattern to extract items
+        const items = listPart.split(/;\s*(?=\d+\.\s)/).map((s) => s.replace(/^\d+\.\s*/, '').trim());
+        // Handle trailing period/text on last item
+        const lastItem = items[items.length - 1];
+        const trailingMatch = lastItem.match(/^(.+?)\.\s+([\s\S]+)$/);
+        let trailing = '';
+        if (trailingMatch && !/^\d/.test(trailingMatch[2])) {
+          items[items.length - 1] = trailingMatch[1];
+          trailing = trailingMatch[2].trim();
+        }
+        if (items.length >= 3) {
+          if (preamble) {
+            blocks.push({ type: 'paragraph', bold: false, text: preamble });
+          }
+          for (const item of items) {
+            blocks.push({ type: 'listItem', bold: false, text: item.replace(/[;.]$/, '').trim() });
+          }
+          if (trailing) {
+            blocks.push({ type: 'paragraph', bold: false, text: trailing });
+          }
+        } else {
+          blocks.push({ type: 'paragraph', bold: false, text: paragraphText });
+        }
+      } else {
+        blocks.push({ type: 'paragraph', bold: false, text: paragraphText });
+      }
     }
 
     currentParagraph = [];
